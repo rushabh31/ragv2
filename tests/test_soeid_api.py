@@ -32,8 +32,8 @@ async def test_soeid_api():
     logger.info("=== Testing SOEID API Endpoint ===")
     
     # Initialize memory once for all tests
-    from src.rag.src.chatbot.memory.memory_factory import MemoryFactory
-    from src.rag.src.shared.utils.config_manager import ConfigManager
+    from src.rag.chatbot.memory.memory_factory import MemoryFactory
+    from src.rag.shared.utils.config_manager import ConfigManager
     
     config = ConfigManager().get_section("chatbot.memory", {})
     memory = MemoryFactory.create_memory(config)
@@ -110,7 +110,7 @@ async def test_soeid_api():
     # Test 3: Test the service method directly
     logger.info("\n--- Test 3: Testing Service Method Directly ---")
     
-    from src.rag.src.chatbot.api.service import ChatbotService
+    from src.rag.chatbot.api.service import ChatbotService
     
     # Create service with the same memory instance
     service = ChatbotService()

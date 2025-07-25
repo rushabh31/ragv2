@@ -34,8 +34,8 @@ async def test_api_persistence():
     # Test 1: Add conversations via memory directly
     logger.info("--- Test 1: Adding Conversations via Memory ---")
     
-    from src.rag.src.chatbot.memory.memory_singleton import memory_singleton
-    from src.rag.src.chatbot.api.service import ChatbotService
+    from src.rag.chatbot.memory.memory_singleton import memory_singleton
+    from src.rag.chatbot.api.service import ChatbotService
     
     # Get memory instance
     memory = await memory_singleton.get_memory()
@@ -134,7 +134,7 @@ async def test_api_persistence():
     # Test 6: Test workflow manager integration
     logger.info("\n--- Test 6: Workflow Manager Integration ---")
     
-    from src.rag.src.chatbot.workflow.workflow_manager import WorkflowManager
+    from src.rag.chatbot.workflow.workflow_manager import WorkflowManager
     
     workflow_manager = WorkflowManager()
     

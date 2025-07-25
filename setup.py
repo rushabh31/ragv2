@@ -39,8 +39,8 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'controlsgenai-ingestion=src.rag.src.ingestion.api.main:main',
-            'controlsgenai-chatbot=src.rag.src.chatbot.api.main:main',
+            'controlsgenai-ingestion=src.rag.ingestion.api.main:main',
+            'controlsgenai-chatbot=src.rag.chatbot.api.main:main',
         ],
     },
     classifiers=[

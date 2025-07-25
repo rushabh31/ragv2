@@ -34,7 +34,7 @@ async def test_soeid_endpoints():
     # Test 1: Add some test data
     logger.info("--- Test 1: Adding Test Data ---")
     
-    from src.rag.src.chatbot.memory.memory_singleton import memory_singleton
+    from src.rag.chatbot.memory.memory_singleton import memory_singleton
     
     # Get memory instance
     memory = await memory_singleton.get_memory()
@@ -151,7 +151,7 @@ async def test_soeid_endpoints():
     # Test 6: Test service method directly
     logger.info("\n--- Test 6: Service Method Test ---")
     
-    from src.rag.src.chatbot.api.service import ChatbotService
+    from src.rag.chatbot.api.service import ChatbotService
     
     service = ChatbotService()
     

@@ -26,9 +26,9 @@ async def test_singleton_memory():
     """Test singleton memory functionality."""
     logger.info("=== Testing Singleton Memory ===")
     
-    from src.rag.src.chatbot.memory.memory_singleton import memory_singleton
-    from src.rag.src.chatbot.api.service import ChatbotService
-    from src.rag.src.chatbot.workflow.workflow_manager import WorkflowManager
+    from src.rag.chatbot.memory.memory_singleton import memory_singleton
+    from src.rag.chatbot.api.service import ChatbotService
+    from src.rag.chatbot.workflow.workflow_manager import WorkflowManager
     
     # Test 1: Get memory instance
     logger.info("--- Test 1: Getting Memory Instance ---")

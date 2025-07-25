@@ -26,7 +26,7 @@ async def demo_soeid_memory():
     """Demonstrate SOEID-based memory functionality."""
     logger.info("=== SOEID Memory Demo ===")
     
-    from src.rag.src.chatbot.memory.memory_factory import MemoryFactory
+    from src.rag.chatbot.memory.memory_factory import MemoryFactory
     
     # Configure LangGraph memory
     config = {
@@ -185,8 +185,8 @@ async def demo_soeid_workflow_integration():
     logger.info(f"Session: {workflow_state.get('session_id')}")
     
     # Simulate memory update with SOEID
-    from src.rag.src.chatbot.memory.memory_factory import MemoryFactory
-    from src.rag.src.shared.utils.config_manager import ConfigManager
+    from src.rag.chatbot.memory.memory_factory import MemoryFactory
+    from src.rag.shared.utils.config_manager import ConfigManager
     
     config = ConfigManager().get_section("chatbot.memory", {})
     memory = MemoryFactory.create_memory(config)

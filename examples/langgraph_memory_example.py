@@ -26,7 +26,7 @@ async def demo_in_memory_memory():
     """Demonstrate in-memory LangGraph memory."""
     logger.info("=== In-Memory LangGraph Memory Demo ===")
     
-    from src.rag.src.chatbot.memory.memory_factory import MemoryFactory
+    from src.rag.chatbot.memory.memory_factory import MemoryFactory
     
     # Configure in-memory memory
     config = {
@@ -107,7 +107,7 @@ async def demo_postgres_memory():
     """Demonstrate PostgreSQL LangGraph memory (requires PostgreSQL setup)."""
     logger.info("=== PostgreSQL LangGraph Memory Demo ===")
     
-    from src.rag.src.chatbot.memory.memory_factory import MemoryFactory
+    from src.rag.chatbot.memory.memory_factory import MemoryFactory
     
     # Configure PostgreSQL memory
     config = {
@@ -150,7 +150,7 @@ async def demo_memory_factory():
     """Demonstrate the memory factory with different memory types."""
     logger.info("=== Memory Factory Demo ===")
     
-    from src.rag.src.chatbot.memory.memory_factory import MemoryFactory
+    from src.rag.chatbot.memory.memory_factory import MemoryFactory
     
     # Show supported memory types
     supported_types = MemoryFactory.get_supported_types()

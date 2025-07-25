@@ -33,22 +33,22 @@ def test_imports():
         
         # Test core modules
         print("5. Testing core modules...")
-        from src.rag.src.core.exceptions.exceptions import ConfigError
+        from src.rag.core.exceptions.exceptions import ConfigError
         print("   ✓ Core exceptions imported successfully")
         
         # Test shared modules
         print("6. Testing shared modules...")
-        from src.rag.src.shared.utils.config_manager import ConfigManager
+        from src.rag.shared.utils.config_manager import ConfigManager
         print("   ✓ ConfigManager imported successfully")
         
         # Test chatbot modules
         print("7. Testing chatbot modules...")
-        from src.rag.src.chatbot.generators.generator_factory import GeneratorFactory
+        from src.rag.chatbot.generators.generator_factory import GeneratorFactory
         print("   ✓ GeneratorFactory imported successfully")
         
         # Test ingestion modules
         print("8. Testing ingestion modules...")
-        from src.rag.src.ingestion.embedders.embedder_factory import EmbedderFactory
+        from src.rag.ingestion.embedders.embedder_factory import EmbedderFactory
         print("   ✓ EmbedderFactory imported successfully")
         
         print("\n🎉 All imports successful! The controlsgenai package is properly structured.")
@@ -74,7 +74,7 @@ def test_basic_functionality():
     try:
         # Test ConfigManager
         print("1. Testing ConfigManager...")
-        from src.rag.src.shared.utils.config_manager import ConfigManager
+        from src.rag.shared.utils.config_manager import ConfigManager
         config_manager = ConfigManager()
         # Override memory store to in_memory for testing
         config_manager.update_section("memory.provider", "in_memory")
@@ -82,13 +82,13 @@ def test_basic_functionality():
         
         # Test GeneratorFactory
         print("2. Testing GeneratorFactory...")
-        from src.rag.src.chatbot.generators.generator_factory import GeneratorFactory
+        from src.rag.chatbot.generators.generator_factory import GeneratorFactory
         supported_generators = GeneratorFactory.get_available_generators()
         print(f"   ✓ GeneratorFactory has available generators: {list(supported_generators.keys())}")
         
         # Test EmbedderFactory
         print("3. Testing EmbedderFactory...")
-        from src.rag.src.ingestion.embedders.embedder_factory import EmbedderFactory
+        from src.rag.ingestion.embedders.embedder_factory import EmbedderFactory
         supported_embedders = EmbedderFactory.get_available_embedders()
         print(f"   ✓ EmbedderFactory has available embedders: {list(supported_embedders.keys())}")
         

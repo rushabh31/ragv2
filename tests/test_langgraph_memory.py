@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 async def test_langgraph_memory():
     """Test the LangGraph memory implementation."""
     try:
-        from src.rag.src.chatbot.memory.memory_factory import MemoryFactory
+        from src.rag.chatbot.memory.memory_factory import MemoryFactory
         
         logger.info("Testing LangGraph memory implementation...")
         
@@ -116,7 +116,7 @@ async def test_langgraph_memory():
 async def test_memory_factory():
     """Test the memory factory with different memory types."""
     try:
-        from src.rag.src.chatbot.memory.memory_factory import MemoryFactory
+        from src.rag.chatbot.memory.memory_factory import MemoryFactory
         
         logger.info("Testing memory factory...")
         

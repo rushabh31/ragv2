@@ -6,7 +6,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Import and run the application
-from src.rag.src.chatbot.api.main import app
+from src.rag.chatbot.api.main import app
 import uvicorn
 
 if __name__ == "__main__":
