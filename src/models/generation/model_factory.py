@@ -6,7 +6,7 @@ using the universal authentication system.
 """
 
 import logging
-from typing import Dict, Any, Optional, Type, Union
+from typing import Dict, Any, Optional, Type, Union, List
 from enum import Enum
 
 from .anthropic_vertex import AnthropicVertexGenAI

@@ -7,7 +7,7 @@ different providers using the universal authentication system.
 
 import logging
 from enum import Enum
-from typing import Dict, Any, Optional, Union
+from typing import Dict, Any, Optional, Union, List
 
 from .vertex_vision import VertexVisionAI
 from .groq_vision import GroqVisionAI

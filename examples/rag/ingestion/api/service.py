@@ -12,9 +12,10 @@ from src.rag.shared.utils.config_manager import ConfigManager
 from src.rag.core.exceptions.exceptions import DocumentProcessingError, ParsingError, ChunkingError, IndexingError, EmbeddingError
 from src.rag.ingestion.parsers.base_parser import BaseDocumentParser
 from src.rag.ingestion.parsers.vision_parser import VisionParser
-from src.rag.ingestion.parsers.groq_simple_parser import GroqSimpleParser
+from src.rag.ingestion.parsers.groq_vision_parser import GroqVisionParser
 from src.rag.ingestion.parsers.openai_vision_parser import OpenAIVisionParser
 from src.rag.ingestion.parsers.simple_text_parser import SimpleTextParser
+# Note: PyMuPDFParser not available - using available parsers only
 from src.rag.ingestion.chunkers.base_chunker import BaseChunker
 from src.rag.ingestion.chunkers.fixed_size_chunker import FixedSizeChunker
 from src.rag.ingestion.chunkers.semantic_chunker import SemanticChunker
@@ -60,26 +61,28 @@ class IngestionService:
         
         # Initialize parsers
         self._parsers = {}
-        parser_configs = config["ingestion"]["parsers"]
+        parser_config = config.get("parser", {})
+        parser_provider = parser_config.get("provider", "vision_parser")
 
-        # Register simple text parser
-        if parser_configs.get("simple_text", {}).get("enabled", False):
-            self._parsers["simple_text"] = SimpleTextParser(parser_configs.get("simple_text", {}))
-
-        # Register groq_simple_parser
-        if parser_configs.get("groq_simplev_vision", {}).get("enabled", False):
-            self._parsers["groq_simplev_vision"] = GroqSimpleParser(parser_configs.get("groq_simplev_vision", {}))
-
-        if parser_configs.get("pymupdf", {}).get("enabled", True):
-            self._parsers["pymupdf"] = PyMuPDFParser(parser_configs.get("pymupdf", {}))
-        if parser_configs.get("vision_parser", {}).get("enabled", True):
-            self._parsers["vision_parser"] = VisionParser(parser_configs.get("vision_parser", {}))
-        if parser_configs.get("openai_vision", {}).get("enabled", False):
-            self._parsers["openai_vision"] = OpenAIVisionParser(parser_configs.get("openai_vision", {}))
+        # Register parsers based on configuration
+        # Always register simple text parser as fallback
+        self._parsers["simple_text"] = SimpleTextParser({})
+        
+        # Register vision parser if configured
+        if parser_provider == "vision_parser":
+            self._parsers["vision_parser"] = VisionParser(parser_config.get("config", {}))
+        
+        # Register Groq vision parser if configured
+        if parser_provider == "groq_vision_parser":
+            self._parsers["groq_vision_parser"] = GroqVisionParser(parser_config.get("config", {}))
+        
+        # Register OpenAI vision parser if configured
+        if parser_provider == "openai_vision":
+            self._parsers["openai_vision"] = OpenAIVisionParser(parser_config.get("config", {}))
         
         # Initialize chunker based on configuration
-        chunker_config = config["ingestion"]["chunking"]
-        chunker_strategy = chunker_config.get("strategy", "fixed_size")
+        chunker_config = config.get("document_processing", {})
+        chunker_strategy = "fixed_size"  # Default strategy
         
         if chunker_strategy == "semantic":
             self._chunker = SemanticChunker(chunker_config)
@@ -91,7 +94,7 @@ class IngestionService:
         
         # Initialize embedder using factory
         try:
-            embedder_config = config["ingestion"]["embedding"]
+            embedder_config = config.get("embedding", {})
             self._embedder = await EmbedderFactory.create_embedder(embedder_config)
             logger.info(f"Embedder initialized successfully with provider: {embedder_config.get('provider', 'default')}")
         except Exception as e:
@@ -99,27 +102,20 @@ class IngestionService:
             raise EmbeddingError(f"Failed to initialize embedder: {str(e)}")
         
         # Initialize vector store
-        vector_store_config = config["ingestion"]["vector_store"]
-        vector_store_type = vector_store_config.get("type", "faiss")
+        vector_store_config = config.get("vector_store", {})
+        vector_store_type = vector_store_config.get("provider", "faiss")
         
         # Set dimension from config
-        dimension = vector_store_config.get("dimension", 384)
+        dimension = vector_store_config.get("vector_dimension", 384)
         
         if vector_store_type == "faiss":
             # Create FAISS config with necessary parameters
             faiss_config = {
                 "dimension": dimension,
-                "index_type": vector_store_config.get("faiss", {}).get("index_type", "HNSW"),
+                "index_type": "HNSW",
                 "index_path": os.path.join(self.index_dir, "faiss.index"),
                 "metadata_path": os.path.join(self.index_dir, "metadata.pickle")
             }
-            # Add additional FAISS parameters if available
-            if "faiss" in vector_store_config:
-                faiss_params = vector_store_config["faiss"]
-                faiss_config.update({
-                    key: value for key, value in faiss_params.items()
-                    if key not in ["index_path", "metadata_path"]
-                })
             
             self._vector_store = FAISSVectorStore(faiss_config)
             logger.info(f"Initializing FAISS vector store with index type: {faiss_config.get('index_type', 'HNSW')}")
@@ -128,9 +124,9 @@ class IngestionService:
             # Create PgVector config with necessary parameters
             pg_config = {
                 "dimension": dimension,
-                "connection_string": vector_store_config.get("pgvector", {}).get("connection_string", ""),
-                "table_name": vector_store_config.get("pgvector", {}).get("table_name", "document_embeddings"),
-                "index_method": vector_store_config.get("pgvector", {}).get("index_method", "ivfflat"),
+                "connection_string": f"postgresql://{vector_store_config.get('config', {}).get('user', 'rag_user')}:{vector_store_config.get('config', {}).get('password', 'rag_password')}@{vector_store_config.get('config', {}).get('host', 'localhost')}:{vector_store_config.get('config', {}).get('port', 5432)}/{vector_store_config.get('config', {}).get('database', 'rag_db')}",
+                "table_name": vector_store_config.get('config', {}).get("table_name", "document_embeddings"),
+                "index_method": "ivfflat",
                 "metadata_path": os.path.join(self.index_dir, "pgvector_metadata.pickle")
             }
             
@@ -247,7 +243,7 @@ class IngestionService:
             
             # Chunk documents
             job.progress = 0.4
-            chunks = await self._chunker.chunk(documents, self.config_manager.get_section("ingestion.chunking"))
+            chunks = await self._chunker.chunk(documents, self.config_manager.get_section("document_processing"))
             
             # Generate embeddings
             job.progress = 0.6
@@ -293,7 +289,7 @@ class IngestionService:
         if doc_type == DocumentType.PDF:
             # Get default parser from config
             config = self.config_manager.get_config()
-            default_parser = config["ingestion"]["parsers"].get("default_parser", "pymupdf")
+            default_parser = config.get("parser", {}).get("provider", "vision_parser")
 
             # Try the default parser first
             if default_parser in self._parsers:
@@ -303,8 +299,31 @@ class IngestionService:
                 except Exception as e:
                     logger.warning(f"{default_parser} parser failed: {str(e)}")
 
-            # Try available parsers in priority order (include groq_simplev_vision)
-            for parser_name in ["groq_simplev_vision", "openai_vision", "vision_parser", "pymupdf"]:
+            # Try available parsers in priority order
+            for parser_name in ["groq_vision_parser", "vision_parser", "openai_vision", "simple_text"]:
+                if parser_name in self._parsers and parser_name != default_parser:
+                    try:
+                        logger.info(f"Trying fallback parser: {parser_name}")
+                        return await self._parsers[parser_name].parse(file_path, {})
+                    except Exception as e:
+                        logger.warning(f"{parser_name} parser failed: {str(e)}")
+                        continue
+        
+        elif doc_type == DocumentType.TXT:
+            # For TXT files, use simple text parser first, then fallback to vision parsers
+            config = self.config_manager.get_config()
+            default_parser = "simple_text"  # TXT files should use simple text parser by default
+
+            # Try the default parser first
+            if default_parser in self._parsers:
+                try:
+                    logger.info(f"Using {default_parser} parser for TXT processing")
+                    return await self._parsers[default_parser].parse(file_path, {})
+                except Exception as e:
+                    logger.warning(f"{default_parser} parser failed: {str(e)}")
+
+            # Try available parsers in priority order
+            for parser_name in ["simple_text", "groq_vision_parser", "vision_parser", "openai_vision"]:
                 if parser_name in self._parsers and parser_name != default_parser:
                     try:
                         logger.info(f"Trying fallback parser: {parser_name}")

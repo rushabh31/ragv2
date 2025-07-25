@@ -150,11 +150,11 @@ Answer: """
             raise GenerationError(f"Generation failed: {str(e)}")
     
     def get_model_info(self) -> Dict[str, Any]:
-        \"\"\"Get information about the Groq model.
+        """Get information about the Groq model.
         
         Returns:
             Dictionary containing model information
-        \"\"\"
+        """
         return {
             "provider": "groq",
             "model_name": self.model_name,

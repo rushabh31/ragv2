@@ -10,29 +10,46 @@ document_processing:
 
 # Parser Configuration
 parser:
-  provider: "vision_parser"
+  provider: "groq_vision_parser"
   config:
-    model_name: "gemini-1.5-pro-002"
+    model_name: "llama-3.2-11b-vision-preview"
     prompt_template: "Extract and structure the text content from this document."
+
+# Generation Configuration (for semantic chunking and other LLM tasks)
+generation:
+  provider: "groq"
+  config:
+    model_name: "llama-3.1-70b-versatile"
+    temperature: 0.1
+    max_tokens: 2048
+    top_p: 0.9
 
 # Embedding Configuration - Choose one provider
 embedding:
-  # Option 1: Vertex AI Embedding (New Universal Auth)
-  provider: "vertex_ai"
+  # Option 1: Sentence Transformer Embedding (Local, No API Key Required)
+  provider: "sentence_transformer"
   config:
-    model: "text-embedding-004"
-    project_id: "${PROJECT_ID}"  # From environment
-    location: "us-central1"
-    batch_size: 100
+    model: "all-MiniLM-L12-v2"
+    device: "cpu"  # or "cuda" if GPU available
+    normalize_embeddings: true
+    batch_size: 32
 
-  # Option 2: OpenAI Universal Embedding (New Universal Auth)
+  # Option 2: Vertex AI Embedding (New Universal Auth)
+  # provider: "vertex_ai"
+  # config:
+  #   model: "text-embedding-004"
+  #   project_id: "${PROJECT_ID}"  # From environment
+  #   location: "us-central1"
+  #   batch_size: 100
+
+  # Option 3: OpenAI Universal Embedding (New Universal Auth)
   # provider: "openai_universal"
   # config:
   #   model: "all-mpnet-base-v2"
   #   base_url: "https://api.openai.com/v1"  # Optional custom base URL
   #   batch_size: 100
 
-  # Option 3: Azure OpenAI Embedding (New Universal Auth)
+  # Option 4: Azure OpenAI Embedding (New Universal Auth)
   # provider: "azure_openai"
   # config:
   #   model: "modelname"
@@ -40,13 +57,13 @@ embedding:
   #   api_version: "2023-05-15"
   #   batch_size: 100
 
-  # Option 4: Original Vertex Embedding (Legacy)
+  # Option 5: Original Vertex Embedding (Legacy)
   # provider: "vertex"
   # config:
   #   model: "textembedding-gecko-multilingual"
   #   batch_size: 100
 
-  # Option 5: Original OpenAI Embedding (Legacy)
+  # Option 6: Original OpenAI Embedding (Legacy)
   # provider: "openai"
   # config:
   #   model: "text-embedding-ada-002"
@@ -54,15 +71,12 @@ embedding:
 
 # Vector Store Configuration
 vector_store:
-  provider: "pgvector"
+  provider: "faiss"
   config:
-    host: "localhost"
-    port: 5432
-    database: "rag_db"
-    user: "rag_user"
-    password: "rag_password"
-    table_name: "document_embeddings"
-    vector_dimension: 768  # Adjust based on embedding model
+    dimension: 384  # Adjust based on embedding model (all-MiniLM-L12-v2 = 384 dims)
+    index_type: "HNSW"  # Options: "Flat", "HNSW", "IVF"
+    index_path: "./data/faiss_index.bin"
+    metadata_path: "./data/faiss_metadata.pkl"
 
 # API Configuration
 api:

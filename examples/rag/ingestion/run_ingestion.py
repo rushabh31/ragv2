@@ -7,8 +7,8 @@ import sys
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 sys.path.insert(0, project_root)
 
-# Set the config file path to the local config
-os.environ['CONFIG_PATH'] = os.path.join(os.path.dirname(__file__), 'config.yaml')
+# Set the config file path to the multi-embedding config
+os.environ['CONFIG_PATH'] = os.path.join(os.path.dirname(__file__), 'config_multi_embedding.yaml')
 
 # Import and run the application
 from examples.rag.ingestion.api.main import app
