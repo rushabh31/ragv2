@@ -52,7 +52,7 @@ class ChatbotService:
         Returns:
             Memory instance
         """
-        from src.rag.chatbot.memory.memory_singleton import memory_singleton
+        from src.rag.memory.memory_singleton import memory_singleton
         return await memory_singleton.get_memory()
     
     async def reset_memory_reference(self):

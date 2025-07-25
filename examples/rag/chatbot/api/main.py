@@ -1,18 +1,19 @@
-import os
 import logging
+import os
 import uvicorn
-from fastapi import FastAPI, Depends, HTTPException, Request
+from fastapi import FastAPI, Request, Depends, HTTPException, status
+from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 load_dotenv()
 
+from examples.rag.chatbot.api.router import router as chatbot_router
 from src.rag.shared.utils.config_manager import ConfigManager
-from src.rag.ingestion.api.router import router as ingestion_router
 from src.rag.shared.middleware.middleware_factory import MiddlewareFactory
 from src.rag.core.exceptions.exceptions import (
-    DocumentProcessingError,
-    ChunkingError,
-    EmbeddingError,
-    VectorStoreError,
+    RetrievalError,
+    RerankerError,
+    GenerationError,
+    MemoryError,
     ConfigError,
     AuthenticationError,
     RateLimitError
@@ -23,17 +24,17 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
-logger = logging.getLogger("ingestion-api")
+logger = logging.getLogger("chatbot-api")
 
 # Load configuration
 config_manager = ConfigManager()
 config = config_manager.get_config()
-app_config = config.get("api", {}).get("ingestion", {})
+app_config = config.get("api", {}).get("chatbot", {})
 
 # Create FastAPI app
 app = FastAPI(
-    title="RAG Ingestion API",
-    description="API for document ingestion, processing, and indexing",
+    title="RAG Chatbot API",
+    description="API for conversational retrieval and question answering",
     version="1.0.0"
 )
 
@@ -72,32 +73,32 @@ middleware_config = {
 MiddlewareFactory.configure_app_middleware(app, middleware_config)
 
 # Include routers
-app.include_router(ingestion_router)
+app.include_router(chatbot_router)
 
 # Exception handlers
-@app.exception_handler(DocumentProcessingError)
-async def document_processing_error_handler(request: Request, exc: DocumentProcessingError):
-    return JSONResponse(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        content={"detail": str(exc)}
-    )
-
-@app.exception_handler(ChunkingError)
-async def chunking_error_handler(request: Request, exc: ChunkingError):
-    return JSONResponse(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        content={"detail": str(exc)}
-    )
-
-@app.exception_handler(EmbeddingError)
-async def embedding_error_handler(request: Request, exc: EmbeddingError):
+@app.exception_handler(RetrievalError)
+async def retrieval_error_handler(request: Request, exc: RetrievalError):
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={"detail": str(exc)}
     )
 
-@app.exception_handler(VectorStoreError)
-async def vector_store_error_handler(request: Request, exc: VectorStoreError):
+@app.exception_handler(RerankerError)
+async def reranker_error_handler(request: Request, exc: RerankerError):
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"detail": str(exc)}
+    )
+
+@app.exception_handler(GenerationError)
+async def generation_error_handler(request: Request, exc: GenerationError):
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"detail": str(exc)}
+    )
+
+@app.exception_handler(MemoryError)
+async def memory_error_handler(request: Request, exc: MemoryError):
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={"detail": str(exc)}
@@ -135,16 +136,20 @@ async def general_exception_handler(request: Request, exc: Exception):
 # Health check endpoint
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "service": "ingestion-api"}
+    return {"status": "ok", "service": "chatbot-api"}
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
+def main():
+    """Entry point for the chatbot API server."""
+    port = int(os.environ.get("PORT", 8001))
     log_level = os.environ.get("LOG_LEVEL", "info").lower()
     
     uvicorn.run(
-        "main:app",
+        "examples.rag.chatbot.api.main:app",
         host="0.0.0.0",
         port=port,
         log_level=log_level,
         reload=app_config.get("reload", False)
     )
+
+if __name__ == "__main__":
+    main()

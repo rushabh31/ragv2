@@ -33,20 +33,25 @@ class ConfigManager:
             ConfigError: If configuration file cannot be loaded
         """
         if config_path is None:
-            # Default path is in the project's config directory
-            # Traverse up to find the project root (where setup.py is located)
-            current_dir = Path(__file__).resolve().parent
-            project_root = None
-            while current_dir != current_dir.parent:
-                if (current_dir / 'setup.py').exists():
-                    project_root = current_dir
-                    break
-                current_dir = current_dir.parent
+            # Check for CONFIG_PATH environment variable first
+            env_config_path = os.environ.get('CONFIG_PATH')
+            if env_config_path:
+                config_path = Path(env_config_path)
+            else:
+                # Default path is in the project's config directory
+                # Traverse up to find the project root (where setup.py is located)
+                current_dir = Path(__file__).resolve().parent
+                project_root = None
+                while current_dir != current_dir.parent:
+                    if (current_dir / 'setup.py').exists():
+                        project_root = current_dir
+                        break
+                    current_dir = current_dir.parent
 
-            if project_root is None:
-                raise ConfigError("Could not find the project root directory. Make sure 'setup.py' is present.")
+                if project_root is None:
+                    raise ConfigError("Could not find the project root directory. Make sure 'setup.py' is present.")
 
-            config_path = project_root / 'config' / 'config.yaml'
+                config_path = project_root / 'config' / 'config.yaml'
         
         try:
             with open(config_path, 'r') as f:

@@ -3,7 +3,7 @@ from typing import Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Header, Query, status, Form
 import json
 
-from src.rag.chatbot.api.models import (
+from examples.rag.chatbot.api.models import (
     ChatRequest,
     ChatResponse,
     SessionHistoryResponse,
@@ -13,7 +13,7 @@ from src.rag.chatbot.api.models import (
     FeedbackRequest,
     FeedbackResponse
 )
-from src.rag.chatbot.api.service import ChatbotService
+from examples.rag.chatbot.api.service import ChatbotService
 from src.rag.core.exceptions.exceptions import GenerationError, MemoryError
 
 logger = logging.getLogger(__name__)

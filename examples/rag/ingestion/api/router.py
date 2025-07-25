@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Header,
 from fastapi.responses import JSONResponse
 import json
 
-from src.rag.ingestion.api.models import (
+from examples.rag.ingestion.api.models import (
     DocumentUploadRequest,
     DocumentUploadResponse,
     JobStatusResponse,
@@ -12,7 +12,7 @@ from src.rag.ingestion.api.models import (
     ConfigUpdateRequest,
     ConfigUpdateResponse
 )
-from src.rag.ingestion.api.service import IngestionService
+from examples.rag.ingestion.api.service import IngestionService
 from src.rag.core.exceptions.exceptions import DocumentProcessingError
 
 logger = logging.getLogger(__name__)
