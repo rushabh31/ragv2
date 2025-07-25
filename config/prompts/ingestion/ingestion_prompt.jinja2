@@ -1,0 +1,25 @@
+You are an expert document processor. Your task is to properly chunk and process the following document for a RAG system.
+
+Document content:
+{{ document_content }}
+
+Instructions:
+1. Analyze the content structure to identify natural section breaks
+2. Preserve the semantic meaning of each chunk
+3. Maintain important context and relationships between sections
+4. Extract key metadata such as:
+   - Document type
+   - Main topics
+   - Key entities mentioned
+   - Creation date (if available)
+
+The goal is to create chunks that:
+- Are self-contained and coherent
+- Have appropriate context for retrieval
+- Maintain important relationships and hierarchies
+- Are optimally sized for embedding (neither too large nor too small)
+
+Process the content and provide:
+1. Chunked content with logical breaks
+2. Extracted metadata for each chunk
+3. Any special handling recommendations for this document type

@@ -1,0 +1,163 @@
+##############################################
+# RAG System Configuration File
+##############################################
+
+# System-wide settings
+system:
+  log_level: INFO
+  request_id_header: X-Request-ID
+  environment: development
+
+# Security settings
+security:
+  api_keys:
+    - name: default
+      key: "${API_KEY}"
+      roles:
+        - user
+    - name: admin
+      key: "${ADMIN_API_KEY}"
+      roles:
+        - user
+        - admin
+  rate_limiting:
+    enabled: true
+    provider: local
+    requests: 100
+    period_seconds: 60
+
+# Cache settings
+cache:
+  enabled: true
+  provider: local
+  default_ttl_seconds: 3600
+  max_size: 10000
+  cleanup_interval_seconds: 300
+
+# Ingestion API settings
+ingestion:
+  port: 8000
+  host: 0.0.0.0
+  workers: 4
+  parsers:
+    default_parser: simple_text
+    simple_text:
+      enabled: true
+    pymupdf:
+      enabled: false
+    vision_parser:
+      enabled: false
+      model: gemini-1.5-pro-vision
+      # project_id and location loaded directly from environment variables
+    groq_simplev_vision:
+      enabled: true
+      model: meta-llama/llama-4-scout-17b-16e-instruct
+      api_key: "${GROQ_API_KEY}"
+      max_pages: 50
+    openai_vision:
+      enabled: false
+      model: gpt-4-vision-preview
+      api_key: "${OPENAI_API_KEY}"
+      max_pages: 50
+      # For Azure OpenAI, uncomment and configure these
+      # api_base: "https://your-resource.openai.azure.com"
+      # api_version: "2023-12-01-preview"
+      # api_type: "azure"
+  chunking:
+    strategy: page_based
+    # Options for page-based chunking
+    min_chunk_size: 100
+    use_headers_fallback: true
+    # Keep fixed size options for backwards compatibility
+    chunk_size: 1000
+    chunk_overlap: 200
+  embedding:
+    # Switch between "vertex", "openai", "sentence_transformer", and "groq"
+    provider: sentence_transformer
+    # Vertex AI settings - model only
+    # project_id and location loaded directly from environment variables
+    model: textembedding-gecko-multilingual
+    # Sentence Transformer settings
+    model_name: all-MiniLM-L6-v2
+    batch_size: 32
+    max_workers: 1
+  vector_store:
+    # Choose vector store type: "faiss", "pgvector", or "chromadb"
+    type: pgvector
+    # Common settings
+    # path: ./data/vector_store
+    dimension: 384  # Must match embedding model dimension (384 for all-MiniLM-L6-v2)
+    
+    # FAISS specific settings
+    faiss:
+      index_type: HNSW     # Options: Flat, HNSW, IVF
+      metric: inner_product # Options: inner_product, l2
+      nlist: 100           # For IVF indexes
+      nprobe: 10           # For IVF search
+    
+    # PgVector specific settings
+    pgvector:
+      connection_string: "postgresql://localhost:5432/postgres"
+      table_name: "document_embeddings"
+      index_method: "hnsw"  # Options: ivfflat, hnsw
+    
+    # ChromaDB specific settings
+    chromadb:
+      persist_directory: "./data/chromadb"
+      collection_name: "document_embeddings"
+      distance_function: "cosine"  # Options: cosine, l2, ip
+
+# Chatbot API settings
+chatbot:
+  port: 8001
+  host: 0.0.0.0
+  workers: 4
+  retrieval:
+    vector_store:
+      type: pgvector
+      connection_string: "postgresql://localhost:5432/postgres"
+      table_name: "document_embeddings"
+      dimension: 384  # Must match embedding model dimension
+      index_method: "hnsw"  # Options: ivfflat, hnsw
+    top_k: 5
+    similarity_threshold: 0.7
+  reranking:
+    enabled: true
+    type: custom  # Options: custom, cross_encoder
+    model_name: cross-encoder/ms-marco-MiniLM-L-6-v2  # Only used for cross_encoder type
+    top_k: 3
+    score_threshold: 0.5
+    # Custom reranker weights
+    keyword_weight: 0.3
+    tfidf_weight: 0.4
+    length_weight: 0.2
+    position_weight: 0.1
+    min_score_threshold: 0.0
+  generation:
+    # Switch between "vertex", "openai", and "groq"
+    provider: groq
+    # Vertex AI settings - model only
+    # project_id and location loaded directly from environment variables
+    model: meta-llama/llama-4-scout-17b-16e-instruct
+    # model: gemini-1.5-pro
+    temperature: 0.2
+    max_output_tokens: 1024
+    top_p: 0.95
+    # Groq settings (as fallback)
+    api_key: "${GROQ_API_KEY}"
+    templates_dir: config/prompts/chatbot
+    template: rag_prompt.jinja2
+  memory:
+    # Memory type: "simple", "mem0", or "langgraph"
+    type: langgraph
+    # LangGraph memory settings
+    store_type: in_memory  # "in_memory" or "postgres"
+    embedding_dimensions: 384
+    max_history: 20
+    # PostgreSQL settings (only used if store_type is "postgres")
+    postgres:
+      connection_string: "postgresql://localhost:5432/postgres"
+    # Legacy settings for simple memory
+    max_messages: 20
+    message_expiry_minutes: 60
+    max_sessions: 1000

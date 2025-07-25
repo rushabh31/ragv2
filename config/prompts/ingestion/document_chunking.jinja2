@@ -1,0 +1,29 @@
+Process the following document for chunking into a knowledge base:
+
+Document content:
+{{ content }}
+
+{% if metadata %}
+Document metadata:
+{% for key, value in metadata.items() %}
+- {{ key }}: {{ value }}
+{% endfor %}
+{% endif %}
+
+Chunking instructions:
+1. Split the content into semantically meaningful chunks
+2. Maintain context within each chunk
+3. Each chunk should be self-contained where possible
+4. Preserve hierarchical structure and relationships
+5. Respect natural document boundaries (paragraphs, sections, etc.)
+6. Optimal chunk size: {{ chunk_size }} characters (approximate)
+7. Include sufficient context for each chunk to be independently retrievable
+
+Processing guidelines:
+- Preserve headings with their associated content
+- Keep lists together when possible
+- Maintain table structures within chunks
+- Include metadata in chunks when relevant to understanding
+- Ensure code blocks remain intact and with sufficient context
+
+Return the chunked document with appropriate metadata preserved for each chunk.
