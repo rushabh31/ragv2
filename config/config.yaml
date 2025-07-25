@@ -40,20 +40,15 @@ ingestion:
   host: 0.0.0.0
   workers: 4
   parsers:
-    default_parser: simple_text
+    default_parser: vision_parser
+    vision_parser:
+      enabled: true
+      model: gemini-1.5-pro-vision
+      # project_id and location loaded directly from environment variables
     simple_text:
       enabled: true
     pymupdf:
       enabled: false
-    vision_parser:
-      enabled: false
-      model: gemini-1.5-pro-vision
-      # project_id and location loaded directly from environment variables
-    groq_simplev_vision:
-      enabled: true
-      model: meta-llama/llama-4-scout-17b-16e-instruct
-      api_key: "${GROQ_API_KEY}"
-      max_pages: 50
     openai_vision:
       enabled: false
       model: gpt-4-vision-preview
@@ -72,13 +67,11 @@ ingestion:
     chunk_size: 1000
     chunk_overlap: 200
   embedding:
-    # Switch between "vertex", "openai", "sentence_transformer", and "groq"
-    provider: sentence_transformer
+    # Switch between "vertex" and "openai"
+    provider: vertex
     # Vertex AI settings - model only
     # project_id and location loaded directly from environment variables
     model: textembedding-gecko-multilingual
-    # Sentence Transformer settings
-    model_name: all-MiniLM-L6-v2
     batch_size: 32
     max_workers: 1
   vector_store:
@@ -134,17 +127,14 @@ chatbot:
     position_weight: 0.1
     min_score_threshold: 0.0
   generation:
-    # Switch between "vertex", "openai", and "groq"
-    provider: groq
+    # Switch between "vertex" and "openai"
+    provider: vertex
     # Vertex AI settings - model only
     # project_id and location loaded directly from environment variables
-    model: meta-llama/llama-4-scout-17b-16e-instruct
-    # model: gemini-1.5-pro
+    model: gemini-1.5-pro
     temperature: 0.2
     max_output_tokens: 1024
     top_p: 0.95
-    # Groq settings (as fallback)
-    api_key: "${GROQ_API_KEY}"
     templates_dir: config/prompts/chatbot
     template: rag_prompt.jinja2
   memory:

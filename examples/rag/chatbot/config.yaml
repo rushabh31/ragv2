@@ -61,19 +61,14 @@ chatbot:
     position_weight: 0.1
     min_score_threshold: 0.0
   generation:
-    # Switch between "vertex", "openai", and "groq"
-    provider: groq
-    # Vertex AI settings - model only
-    # project_id and location loaded directly from environment variables
-    model: meta-llama/llama-4-scout-17b-16e-instruct
-    # model: gemini-1.5-pro
-    temperature: 0.2
-    max_output_tokens: 1024
-    top_p: 0.95
-    # Groq settings (as fallback)
-    api_key: "${GROQ_API_KEY}"
-    templates_dir: config/prompts/chatbot
-    template: rag_prompt.jinja2
+    # Choose from: vertex, anthropic_vertex, openai, azure_openai
+    provider: vertex
+    config:
+      model_name: gemini-1.5-pro-002
+      temperature: 0.2
+      max_tokens: 1024
+      top_p: 0.95
+      prompt_template: ./config/prompts/chatbot/rag_prompt.jinja2
   memory:
     # Memory type: "simple", "mem0", or "langgraph"
     type: langgraph

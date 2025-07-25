@@ -1,190 +1,163 @@
-"""Groq-based generator for RAG system."""
+"""Groq Generator for RAG system."""
 
 import logging
-import json
-import os
-from typing import Dict, List, Any, Optional, Union
-import time
-import asyncio
-from groq import AsyncGroq
-from jinja2 import Template, Environment, FileSystemLoader, select_autoescape
+from typing import Dict, Any, List, Optional
+from jinja2 import Template, FileSystemLoader, Environment
 
-from src.rag.core.interfaces.base import Document
 from src.rag.chatbot.generators.base_generator import BaseGenerator
+from src.rag.core.interfaces.base import Document
+from src.models.generation.groq_gen import GroqGenAI
 from src.rag.core.exceptions.exceptions import GenerationError
 from src.rag.shared.utils.config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
 
 class GroqGenerator(BaseGenerator):
-    """Generator using the Groq API."""
+    """Groq-based generator for RAG responses."""
     
     def __init__(self, config: Dict[str, Any] = None):
-        """Initialize Groq generator.
+        """Initialize the Groq generator.
         
         Args:
-            config: Configuration for the generator
+            config: Configuration dictionary with keys:
+                - model_name: Groq model name (default: llama-3.1-70b-versatile)
+                - temperature: Generation temperature (default: 0.2)
+                - max_tokens: Maximum tokens to generate (default: 1024)
+                - top_p: Top-p sampling parameter (default: 0.95)
+                - prompt_template: Path to Jinja2 prompt template
         """
         super().__init__(config)
-        self._client = None
-        self._env = None
+        self.model_name = self.config.get("model_name", "llama-3.1-70b-versatile")
+        self.template_path = self.config.get("prompt_template", "./templates/rag_prompt.jinja2")
+        self._groq_model = None
         self._template = None
         
-    async def _init_client(self):
-        """Initialize the Groq client."""
-        if self._client is None:
+        # Load generation configuration from system config
+        config_manager = ConfigManager()
+        system_config = config_manager.get_config("generation")
+        if system_config and system_config.get("provider") == "groq":
+            generation_config = system_config.get("config", {})
+            self.model_name = generation_config.get("model_name", self.model_name)
+            self.template_path = generation_config.get("prompt_template", self.template_path)
+        
+    async def _init_components(self):
+        """Initialize Groq model and prompt template lazily."""
+        if self._groq_model is None:
             try:
-                # Get API key from config or environment
-                api_key = self.config.get("api_key")
-                logger.info(f"API key from config: {'Found' if api_key else 'Not found'} (value might be a template)")
+                # Initialize with model name using Groq API
+                self._groq_model = GroqGenAI(model_name=self.model_name)
                 
-                # Check for environment variable placeholder
-                if api_key and api_key.startswith("${"): 
-                    env_var_name = api_key.strip("${}")
-                    logger.info(f"Found environment variable placeholder: {env_var_name}")
-                    env_value = os.environ.get(env_var_name)
-                    if env_value:
-                        api_key = env_value
-                        logger.info(f"Using value from environment variable {env_var_name}")
-                    else:
-                        logger.warning(f"Environment variable {env_var_name} not found or empty")
-                        api_key = None
-                
-                # Fall back to direct environment variable
-                if not api_key:
-                    api_key = os.environ.get("GROQ_API_KEY")
-                    logger.info(f"API key from GROQ_API_KEY environment variable: {'Found' if api_key else 'Not found'}")
-                
-                if not api_key:
-                    raise GenerationError("Groq API key not provided in config or environment variables")
-                    
-                # Debug masked key
-                if len(api_key) > 8:
-                    masked_key = api_key[:4] + '***' + api_key[-4:]
-                    logger.info(f"Using API key: {masked_key}")
+                # Validate authentication
+                is_valid = await self._groq_model.validate_authentication()
+                if is_valid:
+                    logger.info(f"Initialized Groq model: {self.model_name}")
                 else:
-                    logger.warning("API key seems too short, might be invalid")
-                
-                # Create async client
-                self._client = AsyncGroq(api_key=api_key)
-                logger.info("Groq client initialized successfully")
-                
-                # Initialize template environment
-                templates_dir = self.config.get("templates_dir", "templates")
-                
-                # Use absolute path for templates
-                import os
-                base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-                absolute_templates_dir = os.path.join(base_dir, templates_dir)
-                
-                logger.info(f"Looking for templates in: {absolute_templates_dir}")
-                
-                self._env = Environment(
-                    loader=FileSystemLoader(absolute_templates_dir),
-                    autoescape=select_autoescape(['html', 'xml'])
-                )
-                
-                # Load the template
-                template_name = self.config.get("template", "rag_prompt.jinja2")
-                try:
-                    self._template = self._env.get_template(template_name)
-                    logger.info(f"Loaded prompt template: {template_name}")
-                except Exception as template_error:
-                    # Use a default template if loading fails
-                    logger.warning(f"Failed to load template from {templates_dir}/{template_name}: {str(template_error)}")
-                    logger.info("Using default in-memory template")
-                    template_str = """
-                    Answer the following question based on the provided context.
-                    
-                    Context:
-                    {% for doc in documents %}
-                    ---
-                    {{ doc.content }}
-                    ---
-                    {% endfor %}
-                    
-                    {% if conversation_history %}
-                    Previous conversation:
-                    {% for message in conversation_history %}
-                    {{ message.role }}: {{ message.content }}
-                    {% endfor %}
-                    {% endif %}
-                    
-                    Question: {{ query }}
-                    
-                    Instructions:
-                    1. Answer the question based only on the provided context.
-                    2. If the context doesn't contain the answer, say "I don't have enough information to answer that question."
-                    3. Provide specific references to the context when possible.
-                    4. Be concise and accurate.
-                    
-                    Answer:
-                    """
-                    self._template = Template(template_str)
-                
+                    logger.warning("Groq model authentication validation failed")
             except Exception as e:
-                logger.error(f"Failed to initialize Groq client: {str(e)}", exc_info=True)
-                raise GenerationError(f"Failed to initialize Groq client: {str(e)}")
+                logger.error(f"Failed to initialize Groq model: {str(e)}")
+                raise
+        
+        if self._template is None:
+            try:
+                # Load Jinja2 template
+                with open(self.template_path, 'r', encoding='utf-8') as f:
+                    template_content = f.read()
+                self._template = Template(template_content)
+                logger.info(f"Loaded prompt template from: {self.template_path}")
+            except FileNotFoundError:
+                logger.warning(f"Template file not found: {self.template_path}, using default template")
+                # Default template
+                default_template = """You are a helpful AI assistant. Use the following context to answer the user's question.
+
+Context:
+{% for doc in context %}
+{{ doc.content }}
+{% endfor %}
+
+Question: {{ query }}
+
+Answer: """ 
+                self._template = Template(default_template)
+            except Exception as e:
+                logger.error(f"Failed to load template: {str(e)}")
+                raise GenerationError(f"Template loading failed: {str(e)}")
     
-    async def _generate_response(self,
-                               query: str,
-                               documents: List[Document] = None,
-                               conversation_history: List[Dict[str, str]] = None,
-                               config: Dict[str, Any] = None) -> str:
-        """Generate a response using Groq.
+    async def _generate_response(self, query: str, context: List[Document], config: Dict[str, Any]) -> str:
+        """Generate response using Groq model.
         
         Args:
             query: User query
-            documents: Retrieved documents
-            conversation_history: Previous conversation
-            config: Additional configuration
+            context: List of relevant documents
+            config: Generation configuration
             
         Returns:
-            Generated response text
+            Generated response
         """
-        await self._init_client()
-        
         try:
-            # Get generation parameters
-            model = config.get("model") or self.config.get("model", "llama3-70b-8192")
-            temperature = config.get("temperature") or self.config.get("temperature", 0.7)
-            max_tokens = config.get("max_tokens") or self.config.get("max_tokens", 1024)
-            top_p = config.get("top_p") or self.config.get("top_p", 0.9)
+            # Initialize components
+            await self._init_components()
             
-            # Prepare the prompt using the template
+            # Render prompt template
             prompt = self._template.render(
                 query=query,
-                documents=documents or [],
-                conversation_history=conversation_history or []
+                context=context
             )
             
-            # Log prompt length
-            logger.debug(f"Prompt length: {len(prompt)} characters")
+            # Get generation parameters from config
+            gen_config = {
+                "temperature": config.get("temperature", 0.2),
+                "max_tokens": config.get("max_tokens", 1024),
+                "top_p": config.get("top_p", 0.95)
+            }
             
-            # Track generation time
-            start_time = time.time()
+            logger.debug(f"Generating response with Groq model: {self.model_name}")
             
-            # Call Groq API
-            chat_completion = await self._client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": "You are a helpful assistant that provides accurate information based on the given context."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=temperature,
-                max_tokens=max_tokens,
-                top_p=top_p
-            )
+            # Check if we have chat history
+            chat_history = config.get("chat_history", [])
             
-            # Extract response text
-            response_text = chat_completion.choices[0].message.content
+            if chat_history:
+                # Build messages for chat completion
+                messages = []
+                
+                # Add chat history
+                for msg in chat_history:
+                    role = msg.get("role", "user")
+                    content = msg.get("content", "")
+                    messages.append({"role": role, "content": content})
+                
+                # Add current prompt
+                messages.append({"role": "user", "content": prompt})
+                
+                response = await self._groq_model.chat_completion(
+                    messages=messages,
+                    **gen_config
+                )
+            else:
+                # Generate without chat history
+                response = await self._groq_model.generate_content(
+                    prompt=prompt,
+                    **gen_config
+                )
             
-            # Log generation statistics
-            elapsed_time = time.time() - start_time
-            logger.info(f"Generated response in {elapsed_time:.2f}s with {len(response_text)} characters")
+            if not response:
+                raise GenerationError("Empty response from Groq model")
             
-            return response_text
+            logger.debug(f"Generated response length: {len(response)}")
+            return response.strip()
             
         except Exception as e:
-            logger.error(f"Groq generation failed: {str(e)}", exc_info=True)
-            raise GenerationError(f"Failed to generate response using Groq: {str(e)}")
+            logger.error(f"Groq response generation failed: {str(e)}")
+            raise GenerationError(f"Generation failed: {str(e)}")
+    
+    def get_model_info(self) -> Dict[str, Any]:
+        \"\"\"Get information about the Groq model.
+        
+        Returns:
+            Dictionary containing model information
+        \"\"\"
+        return {
+            "provider": "groq",
+            "model_name": self.model_name,
+            "template_path": self.template_path,
+            "api_based": True
+        }

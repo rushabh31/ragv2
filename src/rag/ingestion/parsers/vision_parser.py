@@ -11,7 +11,7 @@ from src.rag.ingestion.parsers.base_parser import BaseDocumentParser
 from src.rag.core.interfaces.base import Document
 from src.rag.core.exceptions.exceptions import DocumentProcessingError
 from src.rag.shared.models.schema import DocumentType, DocumentMetadata, PageMetadata
-from src.rag.shared.utils.vertex_ai import VertexGenAI
+from src.models.vision import VisionModelFactory
 from src.rag.shared.utils.config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
@@ -28,28 +28,39 @@ class VisionParser(BaseDocumentParser):
         super().__init__(config)
         self.model_name = self.config.get("model", "gemini-1.5-pro-002")
         self.max_pages = self.config.get("max_pages", 100)
-        self.vertexai = None
+        self.vision_model = None
         
-        # Load configuration for Vertex AI
+        # Load vision configuration from system config
         config_manager = ConfigManager()
-        vertex_config = config_manager.get_config("vertex")
-        if not vertex_config:
-            raise ValueError("Vertex AI configuration not found in config")
+        system_config = config_manager.get_config("vision")
+        if system_config:
+            self.vision_provider = system_config.get("provider", "vertex_ai")
+            self.vision_config = system_config.get("config", {})
+        else:
+            # Default to vertex_ai if no vision config found
+            self.vision_provider = "vertex_ai"
+            self.vision_config = {}
     
-    async def _init_vertexai(self):
-        """Initialize the VertexAI client lazily."""
-        if self.vertexai is None:
-            # Create VertexGenAI instance
-            self.vertexai = VertexGenAI(model_name=self.model_name)
-            
-            # Load configuration for Vertex AI
-            config_manager = ConfigManager()
-            vertex_config = config_manager.get_config("vertex")
-            if not vertex_config:
-                raise ValueError("Vertex AI configuration not found in config")
+    async def _init_vision_model(self):
+        """Initialize the Vision model lazily using factory."""
+        if self.vision_model is None:
+            try:
+                # Create vision model using factory based on configuration
+                self.vision_model = VisionModelFactory.create_model(
+                    provider=self.vision_provider,
+                    model_name=self.model_name,
+                    **self.vision_config
+                )
                 
-            # Set the config for the VertexGenAI instance
-            self.vertexai.vertex_config = vertex_config
+                # Validate authentication
+                is_valid = await self.vision_model.validate_authentication()
+                if not is_valid:
+                    raise ValueError(f"{self.vision_provider} vision model authentication failed")
+                    
+                logger.info(f"Successfully initialized {self.vision_provider} vision model: {self.model_name}")
+            except Exception as e:
+                logger.error(f"Failed to initialize vision model: {str(e)}")
+                raise
     
     async def _parse_file(self, file_path: str, config: Dict[str, Any]) -> List[Document]:
         """Parse a PDF document into a list of Document objects using vision model.
@@ -65,7 +76,7 @@ class VisionParser(BaseDocumentParser):
             DocumentProcessingError: If PDF parsing fails
         """
         try:
-            await self._init_vertexai()
+            await self._init_vision_model()
             
             # Open PDF document
             pdf_document = fitz.open(file_path)
@@ -152,8 +163,8 @@ class VisionParser(BaseDocumentParser):
         Ignore any watermarks or page numbers.
         """
         
-        # Use the new parse_text_from_image function
-        response = await self.vertexai.parse_text_from_image(
+        # Use the new vision model's parse_text_from_image function
+        response = await self.vision_model.parse_text_from_image(
             base64_encoded=base64_image,
             prompt=prompt
         )

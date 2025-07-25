@@ -1,0 +1,93 @@
+# Multi-Provider RAG Chatbot Configuration
+# This configuration demonstrates how to use different generation providers
+# with the universal authentication system
+
+# Vector Store Configuration
+vector_store:
+  provider: "pgvector"
+  config:
+    host: "localhost"
+    port: 5432
+    database: "rag_db"
+    user: "rag_user"
+    password: "rag_password"
+    table_name: "document_embeddings"
+    vector_dimension: 768
+
+# Retrieval Configuration
+retrieval:
+  top_k: 5
+  similarity_threshold: 0.7
+  rerank: true
+  rerank_top_k: 3
+
+# Generation Configuration - Choose one provider
+generation:
+  # Option 1: Anthropic Vertex AI (Claude)
+  provider: "anthropic_vertex"
+  config:
+    model_name: "claude-3-5-sonnet@20240229"
+    region: "us-east5"
+    project_id: "${PROJECT_ID}"  # From environment
+    max_tokens: 4000
+    temperature: 0.7
+    prompt_template: "./templates/rag_prompt.jinja2"
+    system_message: "You are a helpful AI assistant that provides accurate answers based on the given context."
+
+  # Option 2: OpenAI (Meta-Llama)
+  # provider: "openai"
+  # config:
+  #   model_name: "Meta-Llama-3-70B-Instruct"
+  #   base_url: "https://api.openai.com/v1"  # Optional custom base URL
+  #   max_tokens: 2048
+  #   temperature: 0.7
+  #   prompt_template: "./templates/rag_prompt.jinja2"
+  #   system_message: "You are an expert on financial institutions."
+
+  # Option 3: Vertex AI (Gemini)
+  # provider: "vertex"
+  # config:
+  #   model_name: "gemini-1.5-pro-002"
+  #   project_id: "${PROJECT_ID}"
+  #   location: "us-central1"
+  #   max_output_tokens: 2048
+  #   temperature: 0.7
+  #   top_p: 1.0
+  #   top_k: 40
+  #   prompt_template: "./templates/rag_prompt.jinja2"
+
+  # Option 4: Azure OpenAI (GPT-4)
+  # provider: "azure_openai"
+  # config:
+  #   model_name: "GPT4-o"
+  #   azure_endpoint: "https://your-resource.openai.azure.com"
+  #   api_version: "2023-05-15"
+  #   max_tokens: 2048
+  #   temperature: 0.2
+  #   stream: false
+  #   prompt_template: "./templates/rag_prompt.jinja2"
+  #   system_message: "You are an expert on financial institutions."
+
+# API Configuration
+api:
+  host: "0.0.0.0"
+  port: 8001
+  cors_origins: ["*"]
+  api_key_required: true
+
+# Logging Configuration
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# Health Check Configuration
+health_check:
+  enabled: true
+  interval_seconds: 30
+  timeout_seconds: 10
+
+# Authentication Health Monitoring
+auth_monitoring:
+  enabled: true
+  log_health_status: true
+  validate_on_startup: true

@@ -40,20 +40,15 @@ ingestion:
   host: 0.0.0.0
   workers: 4
   parsers:
-    default_parser: simple_text
+    default_parser: vision_parser
+    vision_parser:
+      enabled: true
+      model: gemini-1.5-pro-002
+      max_pages: 100
     simple_text:
       enabled: true
     pymupdf:
       enabled: false
-    vision_parser:
-      enabled: false
-      model: gemini-1.5-pro-vision
-      # project_id and location loaded directly from environment variables
-    groq_simplev_vision:
-      enabled: true
-      model: meta-llama/llama-4-scout-17b-16e-instruct
-      api_key: "${GROQ_API_KEY}"
-      max_pages: 50
     openai_vision:
       enabled: false
       model: gpt-4-vision-preview
@@ -72,15 +67,11 @@ ingestion:
     chunk_size: 1000
     chunk_overlap: 200
   embedding:
-    # Switch between "vertex", "openai", "sentence_transformer", and "groq"
-    provider: sentence_transformer
-    # Vertex AI settings - model only
-    # project_id and location loaded directly from environment variables
-    model: textembedding-gecko-multilingual
-    # Sentence Transformer settings
-    model_name: all-MiniLM-L6-v2
-    batch_size: 32
-    max_workers: 1
+    # Choose from: vertex_ai, openai_universal, azure_openai, vertex (legacy), openai (legacy)
+    provider: vertex_ai
+    config:
+      model: text-embedding-004
+      batch_size: 100
   vector_store:
     # Choose vector store type: "faiss", "pgvector", or "chromadb"
     type: pgvector

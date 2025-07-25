@@ -5,7 +5,8 @@ import uuid
 from src.rag.ingestion.chunkers.base_chunker import BaseChunker
 from src.rag.core.interfaces.base import Document, Chunk
 from src.rag.shared.models.schema import ChunkMetadata
-from src.rag.shared.utils.vertex_ai import VertexGenAI
+from src.models.generation.model_factory import GenerationModelFactory
+from src.rag.shared.utils.config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
 
@@ -25,12 +26,33 @@ class SemanticChunker(BaseChunker):
         self.max_chunk_size = self.config.get("max_chunk_size", 1500)
         self.min_chunk_size = self.config.get("min_chunk_size", 300)
         self.use_llm_boundary = self.config.get("use_llm_boundary", False)
-        self._vertex_ai = None
+        self._generation_model = None
+        
+        # Load generation config from system config
+        config_manager = ConfigManager()
+        system_config = config_manager.get_config("generation")
+        self.generation_provider = system_config.get("provider", "vertex") if system_config else "vertex"
+        self.generation_config = system_config.get("config", {}) if system_config else {}
 
-    async def _init_vertex_ai(self):
-        """Initialize VertexAI client lazily."""
-        if self._vertex_ai is None and self.use_llm_boundary:
-            self._vertex_ai = VertexGenAI()
+    async def _init_generation_model(self):
+        """Initialize generation model lazily based on configuration."""
+        if self._generation_model is None and self.use_llm_boundary:
+            try:
+                # Create model using factory based on configuration
+                self._generation_model = GenerationModelFactory.create_model(
+                    provider=self.generation_provider,
+                    **self.generation_config
+                )
+                
+                # Validate authentication
+                is_valid = await self._generation_model.validate_authentication()
+                if is_valid:
+                    logger.info(f"Initialized {self.generation_provider} generation model for semantic chunking")
+                else:
+                    logger.warning(f"{self.generation_provider} generation model authentication validation failed")
+            except Exception as e:
+                logger.error(f"Failed to initialize generation model for chunking: {str(e)}")
+                raise
     
     async def _chunk_document(self, document: Document, config: Dict[str, Any]) -> List[Chunk]:
         """Split a document into semantic chunks based on content structure.
@@ -76,7 +98,7 @@ class SemanticChunker(BaseChunker):
         
         # Split content at semantic boundaries
         if use_llm_boundary:
-            await self._init_vertex_ai()
+            await self._init_generation_model()
             chunks = await self._chunk_with_llm(content, document_id, page_number, metadata, max_chunk_size)
         else:
             chunks = self._chunk_with_heuristics(content, document_id, page_number, metadata, max_chunk_size, min_chunk_size)
@@ -136,9 +158,9 @@ class SemanticChunker(BaseChunker):
             """
             
             try:
-                response = await self._vertex_ai.generate_content(
+                response = await self._generation_model.generate_content(
                     prompt=prompt,
-                    generation_config={"temperature": 0.0}
+                    temperature=0.0
                 )
                 
                 # Parse line numbers from response

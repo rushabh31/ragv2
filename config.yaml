@@ -34,33 +34,35 @@ cache:
   max_size: 10000
   cleanup_interval_seconds: 300
 
+# Vision model configuration (used by vision_parser)
+vision:
+  # Choose from: vertex_ai, groq (more providers can be added)
+  provider: vertex_ai
+  config:
+    model: gemini-1.5-pro-002
+    region: us-central1
+
 # Ingestion API settings
 ingestion:
   port: 8000
   host: 0.0.0.0
   workers: 4
   parsing:
-    default_parser: vertex
+    default_parser: vision_parser
     vision:
       enabled: true
-      model: gemini-pro-vision
-      project_id: "${GCP_PROJECT_ID}"
-      location: us-central1
+      model: gemini-1.5-pro-002
+      max_pages: 100
   chunking:
     strategy: fixed_size
     chunk_size: 1000
     chunk_overlap: 200
   embedding:
-    # Switch between "vertex" and "sentence_transformer"
-    provider: vertex
-    # Vertex AI settings
-    project_id: "${GCP_PROJECT_ID}"
-    location: us-central1
-    model: textembedding-gecko
-    # Sentence Transformer settings
-    model_name: all-MiniLM-L6-v2
-    batch_size: 32
-    max_workers: 1
+    # Choose from: vertex_ai, openai_universal, azure_openai, sentence_transformer, vertex (legacy), openai (legacy)
+    provider: vertex_ai
+    config:
+      model: text-embedding-004
+      batch_size: 100
   vector_store:
     type: faiss
     path: ./data/vector_store
@@ -87,20 +89,14 @@ chatbot:
     top_k: 3
     score_threshold: 0.5
   generation:
-    # Switch between "vertex" and "groq"
+    # Choose from: vertex, anthropic_vertex, openai, azure_openai, groq
     provider: vertex
-    # Vertex AI settings
-    project_id: "${GCP_PROJECT_ID}"
-    location: us-central1
-    model: gemini-1.0-pro
-    temperature: 0.2
-    max_output_tokens: 1024
-    top_p: 0.95
-    # Groq settings
-    api_key: "${GROQ_API_KEY}"
-    model: llama3-70b-8192
-    templates_dir: templates
-    template: rag_prompt.jinja2
+    config:
+      model_name: gemini-1.5-pro-002
+      temperature: 0.2
+      max_tokens: 1024
+      top_p: 0.95
+      prompt_template: ./templates/rag_prompt.jinja2
   memory:
     type: simple
     max_messages: 20

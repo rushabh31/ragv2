@@ -5,8 +5,11 @@ from typing import Dict, Any, Optional, Type
 
 from src.rag.ingestion.embedders.base_embedder import BaseEmbedder
 from src.rag.ingestion.embedders.vertex_embedder import VertexEmbedder
-from src.rag.ingestion.embedders.sentence_transformer_embedder import SentenceTransformerEmbedder
 from src.rag.ingestion.embedders.openai_embedder import OpenAIEmbedder
+from src.rag.ingestion.embedders.vertex_ai_embedder import VertexAIEmbedder
+from src.rag.ingestion.embedders.openai_universal_embedder import OpenAIUniversalEmbedder
+from src.rag.ingestion.embedders.azure_openai_embedder import AzureOpenAIEmbedder
+from src.rag.ingestion.embedders.sentence_transformer_embedder import SentenceTransformerEmbedder
 from src.rag.core.exceptions.exceptions import EmbeddingError
 from src.rag.shared.utils.config_manager import ConfigManager
 
@@ -14,9 +17,12 @@ logger = logging.getLogger(__name__)
 
 # Registry of available embedders
 EMBEDDER_REGISTRY: Dict[str, Type[BaseEmbedder]] = {
-    "vertex": VertexEmbedder,
-    "openai": OpenAIEmbedder,
-    "sentence_transformer": SentenceTransformerEmbedder
+    "vertex": VertexEmbedder,  # Original vertex embedder
+    "openai": OpenAIEmbedder,  # Original OpenAI embedder
+    "vertex_ai": VertexAIEmbedder,  # New universal auth Vertex AI embedder
+    "openai_universal": OpenAIUniversalEmbedder,  # New universal auth OpenAI embedder
+    "azure_openai": AzureOpenAIEmbedder,  # New Azure OpenAI embedder
+    "sentence_transformer": SentenceTransformerEmbedder  # Local sentence transformer embedder
 }
 
 class EmbedderFactory:
@@ -35,21 +41,18 @@ class EmbedderFactory:
         Raises:
             EmbeddingError: If provider is not supported
         """
-        # Default to sentence_transformer as fallback
-        provider = config.get("provider", "sentence_transformer").lower()
+        # Default to vertex as primary embedder
+        provider = config.get("provider", "vertex").lower()
         
         # Check if we have token-based auth configuration
         config_manager = ConfigManager()
         vertex_config = config_manager.get_config("vertex")
         
-        # No need to force sentence_transformer if we have token-based auth
+        # Log authentication availability
         if vertex_config:
             logger.info("Token-based authentication is available for cloud embedders")
         else:
-            # Only force to sentence_transformer if no token auth and no direct API config
-            if provider in ["vertex", "openai"] and not config.get("api_key"):
-                logger.warning(f"{provider.capitalize()} configuration not found. Defaulting to sentence_transformer provider.")
-                provider = "sentence_transformer"
+            logger.info("Using environment-based authentication for embedders")
         
         if provider not in EMBEDDER_REGISTRY:
             logger.error(f"Unsupported embedder provider: {provider}")

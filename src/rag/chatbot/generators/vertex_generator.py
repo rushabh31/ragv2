@@ -6,7 +6,7 @@ import jinja2
 
 from src.rag.chatbot.generators.base_generator import BaseGenerator
 from src.rag.core.interfaces.base import Document
-from src.rag.shared.utils.vertex_ai import VertexGenAI
+from src.models.generation.model_factory import GenerationModelFactory
 from src.rag.core.exceptions.exceptions import GenerationError
 from src.rag.shared.utils.config_manager import ConfigManager
 
@@ -26,27 +26,42 @@ class VertexGenerator(BaseGenerator):
                 - prompt_template: Path to Jinja2 prompt template
         """
         super().__init__(config)
-        self.model_name = self.config.get("model_name", "gemini-1.5-pro")
+        self.model_name = self.config.get("model_name", "gemini-1.5-pro-002")
         self.template_path = self.config.get("prompt_template", "./templates/rag_prompt.jinja2")
-        self._vertex_ai = None
+        self._generation_model = None
         self._template = None
         
-        # Load vertex configuration
+        # Load generation configuration from system config
         config_manager = ConfigManager()
-        self.vertex_config = config_manager.get_config("vertex")
+        system_config = config_manager.get_config("generation")
+        if system_config:
+            self.generation_provider = system_config.get("provider", "vertex")
+            self.generation_config = system_config.get("config", {})
+        else:
+            # Default to vertex if no generation config found
+            self.generation_provider = "vertex"
+            self.generation_config = {}
         
     async def _init_components(self):
-        """Initialize Vertex AI client and prompt template lazily."""
-        if self._vertex_ai is None:
-            # Initialize with model name
-            self._vertex_ai = VertexGenAI(model_name=self.model_name)
-            
-            # Set the vertex configuration for token-based auth
-            if self.vertex_config:
-                self._vertex_ai.vertex_config = self.vertex_config
-                logger.info(f"Initialized Vertex AI client with model: {self.model_name} and token-based authentication")
-            else:
-                logger.warning("Vertex AI configuration not found. Token-based authentication won't be available.")
+        """Initialize generation model and prompt template lazily."""
+        if self._generation_model is None:
+            try:
+                # Create generation model using factory based on configuration
+                self._generation_model = GenerationModelFactory.create_model(
+                    provider=self.generation_provider,
+                    model_name=self.model_name,
+                    **self.generation_config
+                )
+                
+                # Validate authentication
+                is_valid = await self._generation_model.validate_authentication()
+                if is_valid:
+                    logger.info(f"Initialized {self.generation_provider} generation model: {self.model_name}")
+                else:
+                    logger.warning(f"{self.generation_provider} generation model authentication validation failed")
+            except Exception as e:
+                logger.error(f"Failed to initialize generation model: {str(e)}")
+                raise
         
         if self._template is None:
             try:
@@ -130,25 +145,26 @@ class VertexGenerator(BaseGenerator):
                 "top_k": config.get("top_k", 40)
             }
             
-            # Generate response
+            # Generate response using new VertexGenAI API
             if conversation_history:
-                # Convert conversation history to Vertex AI format for the updated API
-                chat_history = []
+                # Use chat completion with history
+                messages = []
                 for msg in conversation_history:
-                    role = "user" if msg["role"].lower() == "user" else "assistant"
-                    chat_history.append({"role": role, "content": msg["content"]})
+                    role = "user" if msg["role"].lower() == "user" else "model"
+                    messages.append({"role": role, "parts": [{"text": msg["content"]}]})
                 
-                # Generate with chat history
-                response = await self._vertex_ai.generate_content(
-                    prompt=prompt,
-                    chat_history=chat_history,
-                    generation_config=gen_config
+                # Add current prompt
+                messages.append({"role": "user", "parts": [{"text": prompt}]})
+                
+                response = await self._generation_model.chat_completion(
+                    messages=messages,
+                    **gen_config
                 )
             else:
                 # Generate without chat history
-                response = await self._vertex_ai.generate_content(
+                response = await self._generation_model.generate_content(
                     prompt=prompt,
-                    generation_config=gen_config
+                    **gen_config
                 )
             
             # Extract text from response

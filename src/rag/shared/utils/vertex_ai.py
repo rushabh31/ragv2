@@ -2,25 +2,17 @@ import asyncio
 import base64
 import logging
 import os
-import requests
 from typing import Dict, Any, List, Optional, Union
 from vertexai.generative_models import GenerativeModel, Content, Part, Image
 from vertexai.language_models import TextEmbeddingModel
 import vertexai
-from credentials import Credentials
+
+# Import universal authentication system
+from src.utils import UniversalAuthManager, TokenCredentials
 
 logger = logging.getLogger(__name__)
 
-class TokenCredentials(Credentials):
-    def __init__(self, token: str):
-        super().__init__()
-        self.token = token
-        
-    def refresh(self, request):
-        pass
-        
-    def before_request(self, request, method, url, headers):
-        headers["Authorization"] = f"Bearer {self.token}"
+# TokenCredentials is now imported from src.utils
 
 class VertexGenAI:
     """Wrapper for Google Cloud VertexAI generative AI services."""
@@ -40,50 +32,28 @@ class VertexGenAI:
         self._embedding_model = None
         self.provider = "vertex"
         self.vertex_config = None
+        
+        # Initialize universal auth manager
+        self._auth_manager = UniversalAuthManager(f"vertex_ai_{model_name}")
+        self._auth_manager.configure()
     
     def get_coin_token(self):
-        """Get authentication token for Vertex AI directly from environment variables."""
-        url = os.environ.get("COIN_CONSUMER_ENDPOINT_URL") # URL from .env
-        headers = {"Content-Type": "application/x-www-form-urlencoded"}
-        body = {
-            "grant_type": "client_credentials",
-            "scope": os.environ.get("COIN_CONSUMER_SCOPE"), # Scope from .env
-            "client_id": os.environ.get("COIN_CONSUMER_CLIENT_ID"), # Client ID from .env
-            "client_secret": os.environ.get("COIN_CONSUMER_CLIENT_SECRET"), # Client Secret from .env
-        }
-        
-        print("Requesting API token") # Debug step 1
-        
-        response = requests.post(url, headers=headers, data=body, verify=False, timeout=10)
-        
-        if response.status_code == 200:
-            print("Token received successfully") # Debug step 2
-            return response.json().get('access_token', None)
-        else:
-            print(f"Failed to get token! status code: {response.status_code}, Response: {response.text}")
+        """Get authentication token using universal auth manager."""
+        try:
+            print("Requesting API token")  # Debug step 1
+            token = self._auth_manager.get_token_sync()
+            print("Token received successfully")  # Debug step 2
+            return token
+        except Exception as e:
+            print(f"Failed to get token! Error: {str(e)}")
             return None
     
     async def _init_gen_model(self):
         """Initialize generative model lazily."""
         if self._gen_model is None:
             try:
-                # Use API key as OAuth token for credentials
-                token = self.get_coin_token()
-                if not token:
-                    raise ValueError("Failed to retrieve token for Vertex AI client.")
-                credentials = TokenCredentials(token)
-                
-                # Initialize Vertex AI with provided credentials and project details from environment variables
-                project_id = os.environ.get("PROJECT_ID")
-                api_endpoint = os.environ.get("VERTEXAI_API_ENDPOINT")
-                api_transport = os.environ.get("VERTEXAI_API_TRANSPORT", "grpc")
-                
-                vertexai.init(
-                    project=project_id,
-                    api_transport=api_transport,
-                    api_endpoint=api_endpoint,  # uses R2D2 UAT
-                    credentials=credentials,
-                )
+                # Initialize Vertex AI using universal auth manager
+                await self._auth_manager.initialize_vertex_ai()
                 
                 # Initialize the generator for Vertex AI
                 self._gen_model = GenerativeModel(self.model_name)
@@ -244,3 +214,15 @@ class VertexGenAI:
         except Exception as e:
             logger.error(f"Failed to parse text from image: {str(e)}")
             raise
+    
+    def get_auth_health_status(self) -> Dict[str, Any]:
+        """Get health status of the authentication system."""
+        return self._auth_manager.get_health_status()
+    
+    def get_auth_manager(self) -> UniversalAuthManager:
+        """Get the underlying auth manager for advanced operations."""
+        return self._auth_manager
+    
+    async def validate_authentication(self) -> bool:
+        """Validate authentication by testing token acquisition."""
+        return await self._auth_manager.validate_authentication()

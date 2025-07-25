@@ -6,6 +6,9 @@ from typing import Dict, Any, Optional, Type
 
 from src.rag.chatbot.generators.base_generator import BaseGenerator
 from src.rag.chatbot.generators.vertex_generator import VertexGenerator
+from src.rag.chatbot.generators.anthropic_vertex_generator import AnthropicVertexGenerator
+from src.rag.chatbot.generators.openai_generator import OpenAIGenerator
+from src.rag.chatbot.generators.azure_openai_generator import AzureOpenAIGenerator
 from src.rag.chatbot.generators.groq_generator import GroqGenerator
 from src.rag.core.exceptions.exceptions import GenerationError
 
@@ -14,6 +17,9 @@ logger = logging.getLogger(__name__)
 # Registry of available generators
 GENERATOR_REGISTRY: Dict[str, Type[BaseGenerator]] = {
     "vertex": VertexGenerator,
+    "anthropic_vertex": AnthropicVertexGenerator,
+    "openai": OpenAIGenerator,
+    "azure_openai": AzureOpenAIGenerator,
     "groq": GroqGenerator
 }
 
@@ -33,8 +39,8 @@ class GeneratorFactory:
         Raises:
             GenerationError: If provider is not supported
         """
-        # Get the provider from config with groq as default
-        provider = config.get("provider", "groq").lower()
+        # Get the provider from config with vertex as default
+        provider = config.get("provider", "vertex").lower()
         logger.info(f"Generator provider from config: {provider}")
         
         # Allow Vertex to run with token-based auth instead of forcing Groq

@@ -1,0 +1,95 @@
+# Multi-Provider RAG Ingestion Configuration
+# This configuration demonstrates how to use different embedding providers
+# with the universal authentication system
+
+# Document Processing Configuration
+document_processing:
+  chunk_size: 1000
+  chunk_overlap: 200
+  max_chunks_per_document: 100
+
+# Parser Configuration
+parser:
+  provider: "vision_parser"
+  config:
+    model_name: "gemini-1.5-pro-002"
+    prompt_template: "Extract and structure the text content from this document."
+
+# Embedding Configuration - Choose one provider
+embedding:
+  # Option 1: Vertex AI Embedding (New Universal Auth)
+  provider: "vertex_ai"
+  config:
+    model: "text-embedding-004"
+    project_id: "${PROJECT_ID}"  # From environment
+    location: "us-central1"
+    batch_size: 100
+
+  # Option 2: OpenAI Universal Embedding (New Universal Auth)
+  # provider: "openai_universal"
+  # config:
+  #   model: "all-mpnet-base-v2"
+  #   base_url: "https://api.openai.com/v1"  # Optional custom base URL
+  #   batch_size: 100
+
+  # Option 3: Azure OpenAI Embedding (New Universal Auth)
+  # provider: "azure_openai"
+  # config:
+  #   model: "modelname"
+  #   azure_endpoint: "https://your-resource.openai.azure.com"
+  #   api_version: "2023-05-15"
+  #   batch_size: 100
+
+  # Option 4: Original Vertex Embedding (Legacy)
+  # provider: "vertex"
+  # config:
+  #   model: "textembedding-gecko-multilingual"
+  #   batch_size: 100
+
+  # Option 5: Original OpenAI Embedding (Legacy)
+  # provider: "openai"
+  # config:
+  #   model: "text-embedding-ada-002"
+  #   batch_size: 100
+
+# Vector Store Configuration
+vector_store:
+  provider: "pgvector"
+  config:
+    host: "localhost"
+    port: 5432
+    database: "rag_db"
+    user: "rag_user"
+    password: "rag_password"
+    table_name: "document_embeddings"
+    vector_dimension: 768  # Adjust based on embedding model
+
+# API Configuration
+api:
+  host: "0.0.0.0"
+  port: 8000
+  cors_origins: ["*"]
+  api_key_required: true
+
+# Logging Configuration
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# Health Check Configuration
+health_check:
+  enabled: true
+  interval_seconds: 30
+  timeout_seconds: 10
+
+# Authentication Health Monitoring
+auth_monitoring:
+  enabled: true
+  log_health_status: true
+  validate_on_startup: true
+
+# Processing Configuration
+processing:
+  max_concurrent_documents: 5
+  retry_attempts: 3
+  retry_delay_seconds: 1
