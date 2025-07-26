@@ -17,6 +17,107 @@ from src.rag.core.exceptions.exceptions import DocumentProcessingError
 
 logger = logging.getLogger(__name__)
 
+
+def _parse_options_robust(options: str) -> Dict[str, Any]:
+    """
+    Robustly parse options parameter with multiple fallback strategies.
+    
+    Handles:
+    1. Valid JSON strings: '{"metadata": {"key": "value"}}'
+    2. Simple key-value strings: 'key=value,key2=value2'
+    3. Plain strings: treats as a single metadata value
+    4. Empty/None values: returns empty dict
+    
+    Args:
+        options: The options string to parse
+        
+    Returns:
+        Dict containing parsed metadata
+    """
+    if not options or not options.strip():
+        return {}
+    
+    options = options.strip()
+    
+    # Strategy 1: Try to parse as JSON
+    try:
+        parsed = json.loads(options)
+        if isinstance(parsed, dict):
+            # If it's a dict, extract metadata or use the whole dict
+            metadata = parsed.get("metadata", parsed)
+            logger.info(f"Successfully parsed options as JSON: {parsed}")
+            return metadata if isinstance(metadata, dict) else {"value": metadata}
+        elif isinstance(parsed, (str, int, float, bool)):
+            # If it's a primitive value, wrap it in metadata
+            logger.info(f"Parsed JSON primitive value: {parsed}")
+            return {"value": parsed}
+        else:
+            logger.warning(f"Unexpected JSON type {type(parsed)}: {parsed}")
+            return {"raw_value": str(parsed)}
+    except json.JSONDecodeError:
+        logger.debug(f"Options not valid JSON, trying alternative parsing: {options}")
+    
+    # Strategy 2: Try to parse as key=value pairs (e.g., "key1=value1,key2=value2")
+    if '=' in options and (',' in options or ';' in options):
+        try:
+            metadata = {}
+            # Support both comma and semicolon separators
+            separator = ',' if ',' in options else ';'
+            pairs = options.split(separator)
+            
+            for pair in pairs:
+                if '=' in pair:
+                    key, value = pair.split('=', 1)
+                    key = key.strip()
+                    value = value.strip()
+                    
+                    # Try to parse value as JSON if it looks like JSON
+                    if value.startswith(('{', '[', '"')) or value in ('true', 'false', 'null'):
+                        try:
+                            value = json.loads(value)
+                        except json.JSONDecodeError:
+                            pass  # Keep as string
+                    # Try to parse as number
+                    elif value.isdigit():
+                        value = int(value)
+                    elif value.replace('.', '').isdigit():
+                        try:
+                            value = float(value)
+                        except ValueError:
+                            pass  # Keep as string
+                    
+                    metadata[key] = value
+            
+            if metadata:
+                logger.info(f"Successfully parsed options as key-value pairs: {metadata}")
+                return metadata
+        except Exception as e:
+            logger.debug(f"Failed to parse as key-value pairs: {e}")
+    
+    # Strategy 3: Try to parse as single key=value pair
+    if '=' in options and options.count('=') == 1:
+        try:
+            key, value = options.split('=', 1)
+            key = key.strip()
+            value = value.strip()
+            
+            # Try to parse value as JSON
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError:
+                pass  # Keep as string
+            
+            metadata = {key: value}
+            logger.info(f"Successfully parsed options as single key-value: {metadata}")
+            return metadata
+        except Exception as e:
+            logger.debug(f"Failed to parse as single key-value: {e}")
+    
+    # Strategy 4: Treat as plain string metadata
+    logger.info(f"Treating options as plain string metadata: {options}")
+    return {"description": options}
+
+
 # Create router
 router = APIRouter(prefix="/ingest", tags=["ingestion"])
 
@@ -46,17 +147,10 @@ async def upload_document(
         with open(file_path, "wb") as f:
             shutil.copyfileobj(file.file, f)
 
-        # Parse options if provided
+        # Parse options if provided - robust parsing with multiple fallback strategies
         metadata = {}
         if options:
-            try:
-                # Try to parse as JSON string
-                options_dict = json.loads(options)
-                if isinstance(options_dict, dict):
-                    metadata = options_dict.get("metadata", {})
-                    logger.info(f"Successfully parsed options: {options_dict}")
-            except json.JSONDecodeError:
-                logger.warning(f"Failed to parse options as JSON: {options}")
+            metadata = _parse_options_robust(options)
 
         # Create job and start processing, passing the file path instead of UploadFile
         job = await service.upload_document(file_path, soeid, metadata)

@@ -1,5 +1,5 @@
-# RAG Chatbot Configuration
-# Based on code analysis - all parameters verified from source code
+# Canonical RAG Chatbot Configuration
+# Generated from actual code analysis - all parameters verified from source code
 
 # Chatbot Configuration
 chatbot:
@@ -11,6 +11,31 @@ chatbot:
       temperature: 0.7                   # Generation temperature (0.0-1.0)
       max_tokens: 2048                   # Maximum tokens in response
       prompt_template: "./templates/rag_prompt.jinja2"  # Path to Jinja2 template
+      
+      # Alternative: Anthropic Vertex AI
+      # provider: "anthropic_vertex"
+      # config:
+      #   model_name: "claude-3-5-sonnet@20240229"
+      #   temperature: 0.7
+      #   max_tokens: 2048
+      #   region: "us-east5"
+      
+      # Alternative: OpenAI
+      # provider: "openai"
+      # config:
+      #   model_name: "Meta-Llama-3-70B-Instruct"
+      #   base_url: "https://api.openai.com/v1"
+      #   temperature: 0.7
+      #   max_tokens: 2048
+      
+      # Alternative: Azure OpenAI
+      # provider: "azure_openai"
+      # config:
+      #   model_name: "GPT4-o"
+      #   azure_endpoint: "https://your-resource.openai.azure.com"
+      #   api_version: "2023-05-15"
+      #   temperature: 0.7
+      #   max_tokens: 2048
 
   # Retrieval Configuration
   retrieval:
@@ -37,6 +62,11 @@ chatbot:
   reranking:
     type: "custom"              # Options: "cross_encoder", "custom"
     config:
+      # Cross-Encoder Reranker
+      # model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+      # top_k: 5
+      
+      # Custom Reranker (Default)
       top_k: 5                  # Number of documents after reranking
       boost_recent: true        # Boost recent documents
       boost_factor: 1.2         # Boost factor for recent documents
@@ -45,9 +75,25 @@ chatbot:
   memory:
     type: "langgraph_checkpoint"  # Options: "simple", "mem0", "langgraph", "langgraph_checkpoint"
     max_history: 10               # Maximum conversation history length
+    
+    # LangGraph Checkpoint Memory (Default)
     store_type: "postgres"        # Options: "in_memory", "postgres"
     postgres:
       connection_string: "postgresql://username:password@localhost:5432/langgraph_db"
+    
+    # Alternative: Simple Memory
+    # type: "simple"
+    # max_history: 10
+    
+    # Alternative: Mem0 Memory
+    # type: "mem0"
+    # collection_name: "chat_history"
+    # storage_path: "./data/mem0"
+    
+    # Alternative: LangGraph Memory
+    # type: "langgraph"
+    # store_type: "in_memory"
+    # embedding_dimensions: 384
 
   # Workflow Configuration
   workflow:
@@ -99,3 +145,38 @@ chat_history:
   use_chat_history: false       # Enable cross-session chat history by default
   chat_history_days: 7          # Days to look back for chat history
   max_messages_per_session: 100 # Maximum messages per session
+
+# Feedback Configuration
+feedback:
+  enabled: true                 # Enable feedback collection
+  store_feedback: true          # Store feedback in database
+  feedback_types: ["thumbs_up", "thumbs_down", "rating", "comment"]
+
+# Session Configuration
+sessions:
+  session_timeout_minutes: 60   # Session timeout in minutes
+  max_sessions_per_user: 10     # Maximum sessions per user
+  cleanup_interval_minutes: 30  # Session cleanup interval
+
+# Provider-Specific Environment Variables Required:
+# 
+# For Vertex AI:
+# - COIN_CONSUMER_ENDPOINT_URL
+# - COIN_CONSUMER_CLIENT_ID  
+# - COIN_CONSUMER_CLIENT_SECRET
+# - COIN_CONSUMER_SCOPE
+# - PROJECT_ID
+# - VERTEXAI_API_ENDPOINT
+#
+# For OpenAI:
+# - OPENAI_API_KEY
+#
+# For Azure OpenAI:
+# - AZURE_OPENAI_API_KEY
+# - AZURE_OPENAI_ENDPOINT
+#
+# For Anthropic:
+# - ANTHROPIC_API_KEY
+#
+# For PostgreSQL:
+# - Database connection details in connection_string

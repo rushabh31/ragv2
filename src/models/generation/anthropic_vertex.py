@@ -55,12 +55,9 @@ class AnthropicVertexGenAI:
     def get_coin_token(self) -> Optional[str]:
         """Get authentication token using universal auth manager."""
         try:
-            print("Requesting API token")  # Debug step 1
-            token = self._auth_manager.get_token_sync()
-            print("Token received successfully")  # Debug step 2
-            return token
+            return self._auth_manager.get_token("anthropic_vertex")
         except Exception as e:
-            print(f"Failed to get token! Error: {str(e)}")
+            logger.error(f"Failed to get authentication token: {str(e)}")
             return None
     
     async def _init_client(self):

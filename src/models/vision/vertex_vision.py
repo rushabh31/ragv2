@@ -40,7 +40,7 @@ class VertexVisionAI:
         self.config = kwargs
         
         # Initialize universal auth manager
-        self._auth_manager = UniversalAuthManager.get_instance("vertex_ai")
+        self.auth_manager = UniversalAuthManager()
         
         # Model will be initialized lazily
         self._model = None
@@ -55,7 +55,7 @@ class VertexVisionAI:
             Authentication token or None if unavailable
         """
         try:
-            return self._auth_manager.get_token()
+            return self.auth_manager.get_token("vertex_ai")
         except Exception as e:
             logger.error(f"Failed to get authentication token: {str(e)}")
             return None
@@ -64,12 +64,18 @@ class VertexVisionAI:
         """Get authentication health status.
         
         Returns:
-            Dictionary containing authentication health information
+            Dictionary containing health status information
         """
-        return self._auth_manager.get_health_status()
+        token = self.get_coin_token()
+        return {
+            "service": "vertex_ai_vision",
+            "model_name": self.model_name,
+            "status": "healthy" if token else "unhealthy",
+            "token_available": bool(token)
+        }
     
     async def validate_authentication(self) -> bool:
-        """Validate authentication status.
+        """Validate Vertex AI authentication.
         
         Returns:
             True if authentication is valid, False otherwise
@@ -77,13 +83,15 @@ class VertexVisionAI:
         try:
             token = self.get_coin_token()
             if not token:
+                logger.error("Vertex AI token not available")
                 return False
             
             # Initialize if needed to test authentication
             await self._ensure_initialized()
+            logger.info("Vertex AI vision authentication validated successfully")
             return True
         except Exception as e:
-            logger.error(f"Authentication validation failed: {str(e)}")
+            logger.error(f"Vertex AI vision authentication validation error: {str(e)}")
             return False
     
     async def _ensure_initialized(self) -> None:

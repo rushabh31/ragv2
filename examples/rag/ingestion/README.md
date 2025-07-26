@@ -24,12 +24,20 @@ pip install -e .
 
 ### 2. Configure Environment Variables
 
-Set up your API keys in your environment:
+Set up your authentication and API keys in your environment:
 
 ```bash
-export GROQ_API_KEY="your_groq_api_key_here"
-export API_KEY="your_api_key_here"  # Optional: for API authentication
-export ADMIN_API_KEY="your_admin_key_here"  # Optional: for admin access
+# Universal Authentication (Required)
+export COIN_CONSUMER_ENDPOINT_URL="https://your-oauth-server/oauth2/token"
+export COIN_CONSUMER_CLIENT_ID="your-client-id"
+export COIN_CONSUMER_CLIENT_SECRET="your-client-secret"
+export COIN_CONSUMER_SCOPE="https://www.googleapis.com/auth/cloud-platform"
+export PROJECT_ID="your-gcp-project-id"
+export VERTEXAI_API_ENDPOINT="us-central1-aiplatform.googleapis.com"
+
+# API Authentication (Optional)
+export API_KEY="your_api_key_here"  # For API authentication
+export ADMIN_API_KEY="your_admin_key_here"  # For admin access
 ```
 
 ### 3. Start the Service
@@ -76,12 +84,36 @@ curl -X GET 'http://localhost:8000/ingest/documents/user/test-user' \
 
 ## Configuration
 
-The service uses `config.yaml` in this directory. Key settings:
+The service uses `config.yaml` in this directory. All configuration parameters are verified from the source code:
 
-- **Port**: 8000 (configurable in `ingestion.port`)
-- **Vector Store**: PostgreSQL with pgvector (configurable in `ingestion.vector_store`)
-- **Embedding Model**: all-MiniLM-L6-v2 (configurable in `ingestion.embedding`)
-- **Parsers**: Simple text parser enabled by default
+### Document Processing
+- **Chunk Size**: 1000 characters (configurable in `document_processing.chunk_size`)
+- **Chunk Overlap**: 200 characters (configurable in `document_processing.chunk_overlap`)
+- **Max Chunks**: 100 per document (configurable in `document_processing.max_chunks_per_document`)
+
+### Parser Configuration
+- **Default Parser**: `vision_parser` (Vertex AI Gemini Vision)
+- **Available Parsers**: `vision_parser`, `groq_vision_parser`, `openai_vision`, `simple_text`
+- **Vision Model**: `gemini-1.5-pro-002`
+- **Parallel Processing**: 5 concurrent pages (configurable in `parser.config.max_concurrent_pages`)
+
+### Embedding Configuration
+- **Default Provider**: `vertex` (Vertex AI)
+- **Available Providers**: `vertex`, `vertex_ai`, `openai`, `openai_universal`, `azure_openai`
+- **Model**: `text-embedding-004` (768 dimensions)
+- **Batch Size**: 100 (configurable in `embedding.config.batch_size`)
+
+### Vector Store Configuration
+- **Default Provider**: `faiss` (FAISS with HNSW index)
+- **Available Providers**: `faiss`, `pgvector`, `chromadb`
+- **Index Path**: `./data/faiss.index`
+- **Metadata Path**: `./data/metadata.pickle`
+
+### API Configuration
+- **Host**: `0.0.0.0`
+- **Port**: 8000
+- **CORS**: Enabled for all origins
+- **API Key**: Required by default
 
 ## API Endpoints
 

@@ -1,5 +1,5 @@
-# RAG Ingestion Configuration
-# Based on code analysis - all parameters verified from source code
+# Canonical RAG Ingestion Configuration
+# Generated from actual code analysis - all parameters verified from source code
 
 # Document Processing Configuration
 document_processing:
@@ -11,9 +11,18 @@ document_processing:
 parser:
   provider: "vision_parser"     # Options: "vision_parser", "groq_vision_parser", "openai_vision", "simple_text"
   config:
+    # Vision Parser (Vertex AI Gemini Vision) - Default
     model: "gemini-1.5-pro-002"        # Vertex AI vision model
     max_pages: 100                      # Maximum pages to process
     max_concurrent_pages: 5             # Parallel processing pages
+    
+    # Alternative: Groq Vision Parser
+    # model_name: "llama-3.2-11b-vision-preview"
+    # prompt_template: "Extract and structure the text content from this document."
+    
+    # Alternative: OpenAI Vision Parser  
+    # model: "gpt-4o"
+    # api_base: "https://api.openai.com/v1"
 
 # Generation Configuration (for semantic chunking and LLM tasks)
 generation:
@@ -27,17 +36,60 @@ generation:
 embedding:
   provider: "vertex"            # Options: "vertex", "vertex_ai", "openai", "openai_universal", "azure_openai"
   config:
+    # Vertex AI Embeddings (Original)
     model: "text-embedding-004"         # Embedding model
     batch_size: 100                     # Batch size for API calls
+    
+    # Alternative: Vertex AI (New Universal Auth)
+    # provider: "vertex_ai"
+    # config:
+    #   model: "text-embedding-004"
+    #   project_id: "${PROJECT_ID}"
+    #   location: "us-central1"
+    #   batch_size: 100
+    
+    # Alternative: OpenAI Universal
+    # provider: "openai_universal"
+    # config:
+    #   model: "all-mpnet-base-v2"
+    #   base_url: "https://api.openai.com/v1"
+    #   batch_size: 100
+    
+    # Alternative: Azure OpenAI
+    # provider: "azure_openai"
+    # config:
+    #   model: "modelname"
+    #   azure_endpoint: "https://your-resource.openai.azure.com"
+    #   api_version: "2023-05-15"
+    #   batch_size: 100
 
 # Vector Store Configuration
 vector_store:
   provider: "faiss"             # Options: "faiss", "pgvector", "chromadb"
   config:
-    dimension: 768                      # Must match embedding model dimension (text-embedding-004 = 768)
+    # FAISS Configuration (Default)
+    dimension: 768                      # Must match embedding model dimension
     index_type: "HNSW"                  # Options: "Flat", "HNSW", "IVF"
     index_path: "./data/faiss_index.bin"
     metadata_path: "./data/faiss_metadata.pkl"
+    
+  # Alternative: PostgreSQL with pgvector
+  # provider: "pgvector"
+  # config:
+  #   dimension: 768
+  #   connection_string: "postgresql://user:password@localhost:5432/rag_db"
+  #   table_name: "document_embeddings"
+  #   index_method: "ivfflat"           # Options: "ivfflat", "hnsw"
+  #   metadata_path: "./data/pgvector_metadata.pkl"
+  
+  # Alternative: ChromaDB
+  # provider: "chromadb"
+  # config:
+  #   dimension: 768
+  #   persist_directory: "./data/chromadb"
+  #   collection_name: "document_embeddings"
+  #   distance_function: "cosine"       # Options: "cosine", "euclidean", "manhattan"
+  #   metadata_path: "./data/chromadb_metadata.pkl"
 
 # API Configuration
 api:
@@ -68,3 +120,9 @@ processing:
   max_concurrent_documents: 5   # Maximum concurrent document processing
   retry_attempts: 3             # Number of retry attempts
   retry_delay_seconds: 1        # Delay between retries
+
+# Vector Store Dimension Mapping (for reference)
+# text-embedding-004 (Vertex AI): 768 dimensions
+# text-embedding-ada-002 (OpenAI): 1536 dimensions
+# all-mpnet-base-v2 (Sentence Transformers): 768 dimensions
+# all-MiniLM-L12-v2 (Sentence Transformers): 384 dimensions

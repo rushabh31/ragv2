@@ -24,12 +24,23 @@ pip install -e .
 
 ### 2. Configure Environment Variables
 
-Set up your API keys in your environment:
+Set up your authentication and API keys in your environment:
 
 ```bash
-export GROQ_API_KEY="your_groq_api_key_here"
-export API_KEY="your_api_key_here"  # Optional: for API authentication
-export ADMIN_API_KEY="your_admin_key_here"  # Optional: for admin access
+# Universal Authentication (Required)
+export COIN_CONSUMER_ENDPOINT_URL="https://your-oauth-server/oauth2/token"
+export COIN_CONSUMER_CLIENT_ID="your-client-id"
+export COIN_CONSUMER_CLIENT_SECRET="your-client-secret"
+export COIN_CONSUMER_SCOPE="https://www.googleapis.com/auth/cloud-platform"
+export PROJECT_ID="your-gcp-project-id"
+export VERTEXAI_API_ENDPOINT="us-central1-aiplatform.googleapis.com"
+
+# PostgreSQL for Memory (Optional - for persistent memory)
+export POSTGRES_CONNECTION_STRING="postgresql://username:password@localhost:5432/langgraph_db"
+
+# API Authentication (Optional)
+export API_KEY="your_api_key_here"  # For API authentication
+export ADMIN_API_KEY="your_admin_key_here"  # For admin access
 ```
 
 ### 3. Start the Service
@@ -106,13 +117,41 @@ curl -X GET 'http://localhost:8001/chat/history/test_session' \
 
 ## Configuration
 
-The service uses `config.yaml` in this directory. Key settings:
+The service uses `config.yaml` in this directory. All configuration parameters are verified from the source code:
 
-- **Port**: 8001 (configurable in `chatbot.port`)
-- **Vector Store**: PostgreSQL with pgvector (same as ingestion)
-- **LLM Provider**: Groq with Llama model (configurable in `chatbot.generation`)
-- **Memory**: LangGraph in-memory store (configurable in `chatbot.memory`)
-- **Reranker**: Custom reranker (configurable in `chatbot.reranking`)
+### Generation Configuration
+- **Default Provider**: `vertex` (Vertex AI Gemini)
+- **Available Providers**: `vertex`, `anthropic_vertex`, `openai`, `azure_openai`
+- **Model**: `gemini-1.5-pro-002`
+- **Temperature**: 0.7 (configurable in `chatbot.generation.config.temperature`)
+- **Max Tokens**: 2048 (configurable in `chatbot.generation.config.max_tokens`)
+- **Prompt Template**: `./templates/rag_prompt.jinja2`
+
+### Retrieval Configuration
+- **Vector Store**: Must match ingestion config (default: `faiss`)
+- **Embedding Provider**: Must match ingestion config (default: `vertex`)
+- **Embedding Model**: `text-embedding-004` (768 dimensions)
+- **Top K**: 10 documents retrieved (configurable in `chatbot.retrieval.top_k`)
+- **Similarity Threshold**: 0.7 (configurable in `chatbot.retrieval.similarity_threshold`)
+
+### Reranking Configuration
+- **Default Type**: `custom` (TF-IDF based)
+- **Available Types**: `custom`, `cross_encoder`
+- **Top K After Reranking**: 5 documents (configurable in `chatbot.reranking.config.top_k`)
+- **Boost Recent**: Enabled (configurable in `chatbot.reranking.config.boost_recent`)
+
+### Memory Configuration
+- **Default Type**: `langgraph_checkpoint` (LangGraph with PostgreSQL)
+- **Available Types**: `simple`, `mem0`, `langgraph`, `langgraph_checkpoint`
+- **Store Type**: `postgres` or `in_memory`
+- **Max History**: 10 messages (configurable in `chatbot.memory.max_history`)
+- **PostgreSQL**: Connection string required for persistent memory
+
+### API Configuration
+- **Host**: `0.0.0.0`
+- **Port**: 8001 (different from ingestion port 8000)
+- **CORS**: Enabled for all origins
+- **API Key**: Required by default
 
 ## API Endpoints
 
