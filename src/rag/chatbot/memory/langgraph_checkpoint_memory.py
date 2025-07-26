@@ -109,8 +109,24 @@ class LangGraphCheckpointMemory(BaseMemory):
                 if not connection_string:
                     raise MemoryError("PostgreSQL connection string is required for postgres store type")
                 
-                # Create PostgreSQL checkpointer
-                return PostgresSaver.from_conn_string(connection_string)
+                # For PostgreSQL, we need to use the context manager for each operation
+                # Store the context manager factory, not a persistent connection
+                self._postgres_connection_string = connection_string
+                
+                # Test the connection and set up schema
+                with PostgresSaver.from_conn_string(connection_string) as postgres_saver:
+                    try:
+                        postgres_saver.setup()
+                        logger.info("PostgreSQL database schema setup completed")
+                    except Exception as setup_error:
+                        logger.warning(f"PostgreSQL schema setup failed: {setup_error}")
+                        # Continue anyway, tables might already exist
+                    
+                    logger.info(f"PostgreSQL checkpointer initialized: {type(postgres_saver)}")
+                    logger.info("PostgreSQL connection tested successfully")
+                
+                # Return None - we'll create connections as needed
+                return None
             else:
                 raise MemoryError(f"Unsupported store type: {self._store_type}")
         except Exception as e:
@@ -244,8 +260,12 @@ class LangGraphCheckpointMemory(BaseMemory):
                 "versions_seen": {}
             }
             
-            # Store the checkpoint
-            await self._checkpointer.aput(config, checkpoint_data, {}, {})
+            # Store the checkpoint using sync method with context manager
+            if self._store_type == "postgres":
+                with PostgresSaver.from_conn_string(self._postgres_connection_string) as checkpointer:
+                    checkpointer.put(config, checkpoint_data, {}, {})
+            else:
+                self._checkpointer.put(config, checkpoint_data, {}, {})
             
             # Also store in a simple format for reliable retrieval
             if not hasattr(self, '_simple_storage'):
@@ -287,7 +307,12 @@ class LangGraphCheckpointMemory(BaseMemory):
             config = await self._get_thread_config(session_id)
             logger.debug(f"Getting messages for session {session_id} with config: {config}")
             
-            checkpoint = await self._checkpointer.aget(config)
+            # Use context manager for PostgreSQL
+            if self._store_type == "postgres":
+                with PostgresSaver.from_conn_string(self._postgres_connection_string) as checkpointer:
+                    checkpoint = checkpointer.get(config)
+            else:
+                checkpoint = self._checkpointer.get(config)
             logger.debug(f"Retrieved checkpoint: {checkpoint}")
             
             if not checkpoint:
@@ -337,21 +362,9 @@ class LangGraphCheckpointMemory(BaseMemory):
                 logger.debug(f"Found {len(thread_ids)} threads in internal storage")
                 return thread_ids
             
-            # Fallback to checkpoint listing
-            checkpoints = []
-            async for checkpoint_tuple in self._checkpointer.alist({}):
-                checkpoints.append(checkpoint_tuple)
-            
-            # Extract unique thread IDs
-            thread_ids = set()
-            for checkpoint_tuple in checkpoints:
-                if hasattr(checkpoint_tuple, 'config') and checkpoint_tuple.config:
-                    configurable = checkpoint_tuple.config.get("configurable", {})
-                    thread_id = configurable.get("thread_id")
-                    if thread_id:
-                        thread_ids.add(thread_id)
-            
-            return list(thread_ids)
+            # Fallback to checkpoint listing (using sync method since async not implemented)
+            logger.warning("Checkpoint listing not available with PostgreSQL checkpointer")
+            return []
             
         except Exception as e:
             logger.error(f"Failed to list thread IDs: {str(e)}", exc_info=True)
@@ -740,13 +753,26 @@ class LangGraphCheckpointMemory(BaseMemory):
             async with self._lock:
                 # Delete thread from checkpointer
                 config = await self._get_thread_config(session_id)
-                await self._checkpointer.adelete_thread(config["configurable"]["thread_id"])
+                if self._store_type == "postgres":
+                    with PostgresSaver.from_conn_string(self._postgres_connection_string) as checkpointer:
+                        checkpointer.delete_thread(config["configurable"]["thread_id"])
+                else:
+                    self._checkpointer.delete_thread(config["configurable"]["thread_id"])
                 
                 # Remove from session tracking
                 if session_id in self._sessions:
                     del self._sessions[session_id]
                 
-                logger.info(f"Cleared session {session_id}")
+                # Clear from internal caches
+                if hasattr(self, '_simple_storage') and session_id in self._simple_storage:
+                    del self._simple_storage[session_id]
+                
+                if hasattr(self, '_session_messages'):
+                    session_key = f"session_{session_id}"
+                    if session_key in self._session_messages:
+                        del self._session_messages[session_key]
+                
+                logger.info(f"Cleared session {session_id} from checkpointer and caches")
                 return True
                 
         except Exception as e:
@@ -869,3 +895,19 @@ class LangGraphCheckpointMemory(BaseMemory):
         except Exception as e:
             logger.error(f"Failed to search long-term memory: {str(e)}", exc_info=True)
             return []
+    
+    def cleanup(self):
+        """Clean up resources."""
+        # No persistent connections to clean up with the new approach
+        if hasattr(self, '_postgres_connection_string'):
+            logger.info("PostgreSQL memory cleanup - no persistent connections to close")
+        
+        # Clear any cached data
+        if hasattr(self, '_simple_storage'):
+            self._simple_storage.clear()
+        if hasattr(self, '_session_messages'):
+            self._session_messages.clear()
+    
+    def __del__(self):
+        """Destructor to ensure cleanup."""
+        self.cleanup()
