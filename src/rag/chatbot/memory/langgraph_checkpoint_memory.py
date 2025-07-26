@@ -18,10 +18,10 @@ except ImportError:
 
 # Try to import PostgreSQL checkpoint saver
 try:
-    from langgraph.checkpoint.postgres import AsyncPostgresSaver
+    from langgraph.checkpoint.postgres import PostgresSaver
     POSTGRES_CHECKPOINT_AVAILABLE = True
 except ImportError:
-    AsyncPostgresSaver = None
+    PostgresSaver = None
     POSTGRES_CHECKPOINT_AVAILABLE = False
 
 # Import LangGraph store components for long-term memory
@@ -109,8 +109,8 @@ class LangGraphCheckpointMemory(BaseMemory):
                 if not connection_string:
                     raise MemoryError("PostgreSQL connection string is required for postgres store type")
                 
-                # Create async PostgreSQL checkpointer
-                return AsyncPostgresSaver.from_conn_string(connection_string)
+                # Create PostgreSQL checkpointer
+                return PostgresSaver.from_conn_string(connection_string)
             else:
                 raise MemoryError(f"Unsupported store type: {self._store_type}")
         except Exception as e:
