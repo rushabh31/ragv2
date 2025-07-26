@@ -619,6 +619,37 @@ class LangGraphCheckpointMemory(BaseMemory):
             logger.error(f"Failed to get history for session {session_id}: {str(e)}", exc_info=True)
             return []
     
+    async def get_session_history_by_soeid(self, session_id: str, soeid: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Get conversation history for a session filtered by SOEID.
+        
+        Args:
+            session_id: Session identifier
+            soeid: Source of Entity ID for the user
+            limit: Maximum number of messages to retrieve
+            
+        Returns:
+            List of conversation messages for the specific user
+        """
+        try:
+            # Get all messages for the session
+            all_messages = await self._get_messages_from_checkpoint(session_id, limit)
+            
+            # Filter messages by SOEID
+            filtered_messages = []
+            for msg in all_messages:
+                msg_soeid = msg.get("metadata", {}).get("soeid")
+                if msg_soeid == soeid:
+                    filtered_messages.append(msg)
+                else:
+                    logger.debug(f"Filtering out message with SOEID '{msg_soeid}' (looking for '{soeid}')")
+            
+            logger.debug(f"Filtered session {session_id} history: {len(all_messages)} total -> {len(filtered_messages)} for SOEID {soeid}")
+            return filtered_messages
+            
+        except Exception as e:
+            logger.error(f"Failed to get session history for session {session_id} and SOEID {soeid}: {str(e)}", exc_info=True)
+            return []
+    
     async def get_relevant_history(self, 
                                  session_id: str, 
                                  query: str, 
@@ -652,15 +683,22 @@ class LangGraphCheckpointMemory(BaseMemory):
             thread_ids = await self._list_thread_ids()
             
             user_sessions = []
+            logger.debug(f"Searching for SOEID '{soeid}' across {len(thread_ids)} threads")
+            
             for thread_id in thread_ids:
                 messages = await self._get_messages_from_checkpoint(thread_id)
+                logger.debug(f"Thread {thread_id}: Found {len(messages)} messages")
                 
                 # Check if any message in this session has the SOEID
                 session_has_soeid = False
                 for message in messages:
-                    if message.get("soeid") == soeid:
+                    msg_soeid = message.get("soeid")
+                    logger.debug(f"  Message SOEID: '{msg_soeid}' vs target: '{soeid}'")
+                    if msg_soeid == soeid:
                         session_has_soeid = True
                         break
+                
+                logger.debug(f"Thread {thread_id}: Has SOEID {soeid}? {session_has_soeid}")
                 
                 if session_has_soeid:
                     # Ensure all messages have the SOEID field

@@ -243,12 +243,12 @@ async def generate_node(state: RAGWorkflowState) -> RAGWorkflowState:
         soeid = state.get("soeid")  # Get SOEID from state if available
         
         try:
-            from src.rag.chatbot.memory.memory_factory import MemoryFactory
-            from src.rag.shared.utils.config_manager import ConfigManager
+            # Use the singleton memory instance to avoid creating multiple instances
+            from examples.rag.chatbot.api.service import ChatbotService
             
-            # Get memory configuration and create memory instance
-            config = ConfigManager().get_section("chatbot.memory", {})
-            memory = MemoryFactory.create_memory(config)
+            # Get the singleton memory instance
+            service = ChatbotService()
+            memory = await service._get_memory_instance()
             
             # Get relevant conversation history - prefer user history by SOEID if available
             if soeid:

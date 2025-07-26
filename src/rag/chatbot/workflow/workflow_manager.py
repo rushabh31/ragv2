@@ -46,11 +46,12 @@ class WorkflowManager:
         # Track active workflow runs
         self._active_runs: Dict[str, Dict[str, Any]] = {}
     
-    async def _get_conversation_history(self, session_id: str) -> List[Message]:
-        """Get conversation history for a session.
+    async def _get_conversation_history(self, session_id: str, soeid: Optional[str] = None) -> List[Message]:
+        """Get conversation history for a session, optionally filtered by SOEID.
         
         Args:
             session_id: Session identifier
+            soeid: Optional SOEID to filter messages by user
             
         Returns:
             List of conversation messages
@@ -62,8 +63,13 @@ class WorkflowManager:
             service = ChatbotService()
             self._memory = await service._get_memory_instance()
         
-        # Get history from memory
-        history = await self._memory.get_history(session_id)
+        # Get history from memory - use SOEID filtering if available
+        if soeid:
+            history = await self._memory.get_session_history_by_soeid(session_id, soeid)
+            logger.debug(f"Retrieved {len(history)} messages for session {session_id} filtered by SOEID {soeid}")
+        else:
+            history = await self._memory.get_history(session_id)
+            logger.debug(f"Retrieved {len(history)} messages for session {session_id} (no SOEID filter)")
         
         # Convert to Message objects
         messages = []
@@ -103,8 +109,13 @@ class WorkflowManager:
             # Record start time for metrics
             start_time = time.time()
             
-            # Get conversation history
-            messages = await self._get_conversation_history(session_id)
+            # Extract SOEID from workflow parameters first
+            soeid = None
+            if workflow_params and "metadata" in workflow_params and "soeid" in workflow_params["metadata"]:
+                soeid = workflow_params["metadata"]["soeid"]
+            
+            # Get conversation history filtered by SOEID if available
+            messages = await self._get_conversation_history(session_id, soeid)
             
             # Initialize workflow state
             initial_state: RAGWorkflowState = {
@@ -115,14 +126,14 @@ class WorkflowManager:
                 "metrics": {"start_time": start_time}
             }
             
+            # Add SOEID to initial state if available
+            if soeid:
+                initial_state["soeid"] = soeid
+            
             # Add workflow parameters if provided
             if workflow_params:
                 for key, value in workflow_params.items():
                     initial_state[key] = value
-                
-                # Extract SOEID from metadata if available
-                if "metadata" in workflow_params and "soeid" in workflow_params["metadata"]:
-                    initial_state["soeid"] = workflow_params["metadata"]["soeid"]
             
             # Store active run
             self._active_runs[run_id] = {
@@ -149,31 +160,8 @@ class WorkflowManager:
             # Process result
             response = result.get("response", "I'm sorry, I couldn't generate a response.")
             
-            # Store in memory if response was successfully generated
-            if "error" not in result:
-                # Ensure memory is initialized
-                if self._memory is None:
-                    # Import here to avoid circular imports
-                    from examples.rag.chatbot.api.service import ChatbotService
-                    service = ChatbotService()
-                    self._memory = await service._get_memory_instance()
-                
-                # Prepare metadata for memory storage
-                memory_metadata = {
-                    "workflow_run_id": run_id,
-                    "processing_time": duration
-                }
-                
-                # Include original metadata (which should contain SOEID)
-                if workflow_params and "metadata" in workflow_params:
-                    memory_metadata.update(workflow_params["metadata"])
-                
-                await self._memory.add(
-                    session_id=session_id,
-                    query=query,
-                    response=response,
-                    metadata=memory_metadata
-                )
+            # Memory is handled by the update_memory_node in the LangGraph workflow
+            # No need to add to memory here to avoid duplication
             
             # Prepare response
             final_result = {

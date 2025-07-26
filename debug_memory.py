@@ -35,44 +35,71 @@ async def test_memory_functionality():
         print(f"   Store type: {memory._store_type}")
         print(f"   Checkpointer type: {type(memory._checkpointer).__name__}")
         
-        # Test adding a message
-        print("\n📝 Step 2: Adding test messages...")
-        session_id = "test-session-123"
-        soeid = "test-user-456"
+        # Test adding messages with different SOEIDs
+        print("\n📝 Step 2: Adding test messages with different SOEIDs...")
+        session_id1 = "test-session-123"
+        session_id2 = "test-session-456"
+        soeid1 = "test-user-456"
+        soeid2 = "test-user-789"
         
-        metadata = {"soeid": soeid, "test": "debug"}
+        metadata1 = {"soeid": soeid1, "test": "debug"}
+        metadata2 = {"soeid": soeid2, "test": "debug"}
         
-        # Add user message
+        # Add messages for first user
         result1 = await memory.add(
-            session_id=session_id,
-            query="Hello, this is a test message",
-            response="Hi! This is a test response",
-            metadata=metadata
+            session_id=session_id1,
+            query="Hello, this is user 456",
+            response="Hi user 456!",
+            metadata=metadata1
         )
-        print(f"✅ Added interaction: {result1}")
+        print(f"✅ Added interaction for user 456: {result1}")
         
-        # Add another message
         result2 = await memory.add(
-            session_id=session_id,
+            session_id=session_id1,
             query="How are you?",
             response="I'm doing well, thank you!",
-            metadata=metadata
+            metadata=metadata1
         )
-        print(f"✅ Added second interaction: {result2}")
+        print(f"✅ Added second interaction for user 456: {result2}")
+        
+        # Add messages for second user
+        result3 = await memory.add(
+            session_id=session_id2,
+            query="Hello, this is user 789",
+            response="Hi user 789!",
+            metadata=metadata2
+        )
+        print(f"✅ Added interaction for user 789: {result3}")
         
         # Test retrieving messages by session
         print("\n📝 Step 3: Retrieving messages by session...")
-        session_messages = await memory.get_history(session_id)
-        print(f"📊 Retrieved {len(session_messages)} messages for session {session_id}")
-        for i, msg in enumerate(session_messages):
+        session1_messages = await memory.get_history(session_id1)
+        print(f"📊 Retrieved {len(session1_messages)} messages for session {session_id1}")
+        for i, msg in enumerate(session1_messages):
             print(f"   Message {i+1}: {msg.get('role', 'unknown')} - {msg.get('content', 'no content')[:50]}...")
             print(f"              SOEID: {msg.get('soeid', 'missing')}")
         
-        # Test retrieving messages by SOEID
+        session2_messages = await memory.get_history(session_id2)
+        print(f"📊 Retrieved {len(session2_messages)} messages for session {session_id2}")
+        for i, msg in enumerate(session2_messages):
+            print(f"   Message {i+1}: {msg.get('role', 'unknown')} - {msg.get('content', 'no content')[:50]}...")
+            print(f"              SOEID: {msg.get('soeid', 'missing')}")
+        
+        # Test retrieving messages by SOEID - Test both users
         print("\n📝 Step 4: Retrieving messages by SOEID...")
-        soeid_sessions = await memory.get_user_history_by_soeid(soeid)
-        print(f"📊 Retrieved {len(soeid_sessions)} sessions for SOEID {soeid}")
-        for i, session in enumerate(soeid_sessions):
+        print(f"Testing SOEID filtering for user {soeid1}:")
+        soeid1_sessions = await memory.get_user_history_by_soeid(soeid1)
+        print(f"📊 Retrieved {len(soeid1_sessions)} sessions for SOEID {soeid1}")
+        for i, session in enumerate(soeid1_sessions):
+            print(f"   Session {i+1}: {session.get('session_id', 'unknown')} with {session.get('message_count', 0)} messages")
+            messages = session.get('messages', [])
+            for j, msg in enumerate(messages):
+                print(f"      Message {j+1}: {msg.get('role', 'unknown')} - {msg.get('content', 'no content')[:30]}...")
+        
+        print(f"\nTesting SOEID filtering for user {soeid2}:")
+        soeid2_sessions = await memory.get_user_history_by_soeid(soeid2)
+        print(f"📊 Retrieved {len(soeid2_sessions)} sessions for SOEID {soeid2}")
+        for i, session in enumerate(soeid2_sessions):
             print(f"   Session {i+1}: {session.get('session_id', 'unknown')} with {session.get('message_count', 0)} messages")
             messages = session.get('messages', [])
             for j, msg in enumerate(messages):
@@ -91,16 +118,20 @@ async def test_memory_functionality():
         
         # Test direct checkpoint access
         print("\n📝 Step 7: Testing direct checkpoint access...")
-        config = await memory._get_thread_config(session_id)
-        print(f"📊 Thread config: {config}")
-        
-        checkpoint = await memory._checkpointer.aget(config)
-        print(f"📊 Checkpoint exists: {checkpoint is not None}")
-        if checkpoint:
-            print(f"   Checkpoint type: {type(checkpoint)}")
-            print(f"   Has channel_values: {hasattr(checkpoint, 'channel_values')}")
-            if hasattr(checkpoint, 'channel_values'):
-                print(f"   Channel values: {checkpoint.channel_values}")
+        try:
+            # Test direct checkpoint access
+            config = await memory._get_thread_config(session_id1)
+            print(f"✅ Thread config retrieved: {config}")
+            
+            # Test checkpoint listing
+            checkpoints = memory._checkpointer.alist(config)
+            checkpoint_list = [cp async for cp in checkpoints]
+            print(f"✅ Found {len(checkpoint_list)} checkpoints")
+            
+        except Exception as e:
+            print(f"❌ Error during testing: {e}")
+            import traceback
+            traceback.print_exc()
         
         print("\n🎉 All tests completed!")
         

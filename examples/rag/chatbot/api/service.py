@@ -56,6 +56,7 @@ class ChatbotService:
             if ChatbotService._memory_instance is None:
                 from src.rag.chatbot.memory.memory_factory import MemoryFactory
                 memory_config = self.config_manager.get_section("chatbot.memory", {})
+                logger.info(f"Memory config being used: {memory_config}")
                 ChatbotService._memory_instance = MemoryFactory.create_memory(memory_config)
                 logger.info("Created singleton memory instance")
             return ChatbotService._memory_instance
