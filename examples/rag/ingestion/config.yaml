@@ -14,6 +14,8 @@ parser:
   config:
     model_name: "meta-llama/llama-4-scout-17b-16e-instruct"
     prompt_template: "Extract and structure the text content from this document."
+    max_pages: 100
+    max_concurrent_pages: 5  # Number of pages to process in parallel
 
 # Generation Configuration (for semantic chunking and other LLM tasks)
 generation:
@@ -22,17 +24,16 @@ generation:
     model_name: "meta-llama/llama-4-scout-17b-16e-instruct"
     temperature: 0.1
     max_tokens: 2048
-    top_p: 0.9
 
 # Embedding Configuration - Choose one provider
 embedding:
-  # Option 1: Sentence Transformer Embedding (Local, No API Key Required)
-  provider: "sentence_transformer"
+  # Option 1: Vertex AI Embedding (Recommended)
+  provider: "vertex_ai"
   config:
-    model: "all-mpnet-base-v2"
-    device: "cpu"  # or "cuda" if GPU available
-    normalize_embeddings: true
-    batch_size: 32
+    model: "text-embedding-004"
+    project_id: "${PROJECT_ID}"  # From environment
+    location: "us-central1"
+    batch_size: 100
 
   # Option 2: Vertex AI Embedding (New Universal Auth)
   # provider: "vertex_ai"

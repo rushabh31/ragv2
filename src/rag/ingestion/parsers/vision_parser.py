@@ -6,6 +6,8 @@ from typing import Dict, Any, List, Optional
 import fitz  # PyMuPDF
 from datetime import datetime
 import json
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 from src.rag.ingestion.parsers.base_parser import BaseDocumentParser
 from src.rag.core.interfaces.base import Document
@@ -28,6 +30,7 @@ class VisionParser(BaseDocumentParser):
         super().__init__(config)
         self.model_name = self.config.get("model", "gemini-1.5-pro-002")
         self.max_pages = self.config.get("max_pages", 100)
+        self.max_concurrent_pages = self.config.get("max_concurrent_pages", 5)
         self.vision_model = None
         
         # Load vision configuration from system config
@@ -103,28 +106,46 @@ class VisionParser(BaseDocumentParser):
                 file_size=self._get_file_size(file_path)
             )
             
-            # Process pages and combine into one document
-            all_text = []
+            # Process pages in parallel
+            pages_to_process = min(page_count, self.max_pages)
+            logger.info(f"Processing {pages_to_process} pages in parallel with max concurrency: {self.max_concurrent_pages}")
             
-            for page_num, page in enumerate(pdf_document):
-                if page_num >= self.max_pages:
-                    break
+            # Create semaphore to limit concurrent processing
+            semaphore = asyncio.Semaphore(self.max_concurrent_pages)
+            
+            # Process pages in batches to avoid memory issues
+            all_text = [None] * pages_to_process  # Pre-allocate list to maintain order
+            
+            # Create tasks for all pages
+            tasks = []
+            for page_num in range(pages_to_process):
+                task = self._process_single_page(pdf_document, page_num, file_path, semaphore)
+                tasks.append(task)
+            
+            # Execute all tasks in parallel and collect results
+            try:
+                results = await asyncio.gather(*tasks, return_exceptions=True)
                 
-                # Get page as image
-                pix = page.get_pixmap()
-                img_data = pix.tobytes("png")
-                base64_image = base64.b64encode(img_data).decode('utf-8')
-                
-                # Use vision model to extract text as markdown
-                try:
-                    markdown_content = await self._extract_text_with_vision(base64_image)
-                    all_text.append(f"--- Page {page_num+1} ---\n\n{markdown_content}")
-                    logger.info(f"Successfully processed page {page_num+1} of {file_path}")
-                except Exception as e:
-                    logger.error(f"Vision extraction failed for page {page_num+1}: {str(e)}")
-                    # Fallback to regular text extraction
-                    fallback_text = page.get_text()
-                    all_text.append(f"--- Page {page_num+1} (fallback extraction) ---\n\n{fallback_text}")
+                # Process results and maintain page order
+                for page_num, result in enumerate(results):
+                    if isinstance(result, Exception):
+                        logger.error(f"Page {page_num+1} processing failed: {str(result)}")
+                        # Fallback to regular text extraction
+                        try:
+                            page = pdf_document[page_num]
+                            fallback_text = page.get_text()
+                            all_text[page_num] = f"--- Page {page_num+1} (fallback extraction) ---\n\n{fallback_text}"
+                        except Exception as fallback_error:
+                            logger.error(f"Fallback extraction also failed for page {page_num+1}: {str(fallback_error)}")
+                            all_text[page_num] = f"--- Page {page_num+1} (extraction failed) ---\n\n[Content could not be extracted]"
+                    else:
+                        all_text[page_num] = result
+                        
+            except Exception as e:
+                logger.error(f"Parallel processing failed: {str(e)}")
+                # Fallback to sequential processing
+                logger.info("Falling back to sequential processing...")
+                all_text = await self._process_pages_sequentially(pdf_document, pages_to_process, file_path)
             
             # Combine all text
             combined_text = "\n\n".join(all_text)
@@ -170,6 +191,90 @@ class VisionParser(BaseDocumentParser):
         )
         
         return response
+    
+    async def _process_single_page(self, pdf_document, page_num: int, file_path: str, semaphore: asyncio.Semaphore) -> str:
+        """Process a single page with concurrency control.
+        
+        Args:
+            pdf_document: PyMuPDF document object
+            page_num: Page number (0-indexed)
+            file_path: Path to the PDF file (for logging)
+            semaphore: Semaphore to control concurrency
+            
+        Returns:
+            Formatted text content for the page
+        """
+        async with semaphore:
+            try:
+                # Convert page to image in thread pool to avoid blocking
+                loop = asyncio.get_event_loop()
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    base64_image = await loop.run_in_executor(
+                        executor, 
+                        self._convert_page_to_base64, 
+                        pdf_document, 
+                        page_num
+                    )
+                
+                # Use vision model to extract text as markdown
+                markdown_content = await self._extract_text_with_vision(base64_image)
+                logger.info(f"Successfully processed page {page_num+1} of {file_path}")
+                return f"--- Page {page_num+1} ---\n\n{markdown_content}"
+                
+            except Exception as e:
+                logger.error(f"Vision extraction failed for page {page_num+1}: {str(e)}")
+                raise e
+    
+    def _convert_page_to_base64(self, pdf_document, page_num: int) -> str:
+        """Convert a PDF page to base64 image (synchronous operation for thread pool).
+        
+        Args:
+            pdf_document: PyMuPDF document object
+            page_num: Page number (0-indexed)
+            
+        Returns:
+            Base64 encoded image string
+        """
+        page = pdf_document[page_num]
+        pix = page.get_pixmap()
+        img_data = pix.tobytes("png")
+        return base64.b64encode(img_data).decode('utf-8')
+    
+    async def _process_pages_sequentially(self, pdf_document, pages_to_process: int, file_path: str) -> List[str]:
+        """Fallback method to process pages sequentially.
+        
+        Args:
+            pdf_document: PyMuPDF document object
+            pages_to_process: Number of pages to process
+            file_path: Path to the PDF file (for logging)
+            
+        Returns:
+            List of formatted text content for each page
+        """
+        all_text = []
+        
+        for page_num in range(pages_to_process):
+            try:
+                # Get page as image
+                base64_image = self._convert_page_to_base64(pdf_document, page_num)
+                
+                # Use vision model to extract text as markdown
+                markdown_content = await self._extract_text_with_vision(base64_image)
+                all_text.append(f"--- Page {page_num+1} ---\n\n{markdown_content}")
+                logger.info(f"Successfully processed page {page_num+1} of {file_path} (sequential)")
+                
+            except Exception as e:
+                logger.error(f"Vision extraction failed for page {page_num+1}: {str(e)}")
+                # Fallback to regular text extraction
+                try:
+                    page = pdf_document[page_num]
+                    fallback_text = page.get_text()
+                    all_text.append(f"--- Page {page_num+1} (fallback extraction) ---\n\n{fallback_text}")
+                except Exception as fallback_error:
+                    logger.error(f"Fallback extraction also failed for page {page_num+1}: {str(fallback_error)}")
+                    all_text.append(f"--- Page {page_num+1} (extraction failed) ---\n\n[Content could not be extracted]")
+        
+        return all_text
     
     def _get_file_size(self, file_path: str) -> int:
         """Get file size in bytes.

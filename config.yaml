@@ -53,6 +53,7 @@ ingestion:
       enabled: true
       model: gemini-1.5-pro-002
       max_pages: 100
+      max_concurrent_pages: 5  # Number of pages to process in parallel
   chunking:
     strategy: fixed_size
     chunk_size: 1000

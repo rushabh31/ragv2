@@ -23,6 +23,8 @@ import tempfile
 import subprocess
 import shutil
 import uuid
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
@@ -55,6 +57,7 @@ class GroqVisionParser(BaseDocumentParser):
             "Extract and structure the text content from this document. Preserve formatting and structure."
         )
         self.max_pages = config.get("max_pages", 50)
+        self.max_concurrent_pages = config.get("max_concurrent_pages", 5)
         self._vision_model = None
         
         logger.info(f"Initialized GroqVisionParser with model: {self.model_name}")
@@ -336,36 +339,38 @@ class GroqVisionParser(BaseDocumentParser):
             else:
                 page_count_to_process = page_count
             
-            # Process each page
-            all_text = []
+            # Process pages in parallel
+            logger.info(f"Processing {page_count_to_process} pages in parallel with max concurrency: {self.max_concurrent_pages}")
             
+            # Create semaphore to limit concurrent processing
+            semaphore = asyncio.Semaphore(self.max_concurrent_pages)
+            
+            # Process pages in batches to avoid memory issues
+            all_text = [None] * page_count_to_process  # Pre-allocate list to maintain order
+            
+            # Create tasks for all pages
+            tasks = []
             for page_num in range(page_count_to_process):
-                logger.info(f"Processing page {page_num + 1} of {page_count}")
+                task = self._process_single_pdf_page(pdf_document, page_num, vision_model, semaphore)
+                tasks.append(task)
+            
+            # Execute all tasks in parallel and collect results
+            try:
+                results = await asyncio.gather(*tasks, return_exceptions=True)
                 
-                # Get the page
-                page = pdf_document[page_num]
-                
-                # Convert page to pixmap (image)
-                pix = page.get_pixmap()
-                
-                # Convert pixmap to PNG image data
-                png_data = pix.tobytes("png")
-                
-                # Convert PNG data to base64
-                base64_image = base64.b64encode(png_data).decode('utf-8')
-                
-                # Process image with vision model
-                try:
-                    page_text = await vision_model.parse_text_from_image(
-                        base64_image=base64_image,
-                        prompt=self.prompt_template
-                    )
-                    all_text.append(f"--- Page {page_num+1} ---\n\n{page_text}")
-                    logger.info(f"Successfully extracted text from page {page_num + 1}")
-                except Exception as e:
-                    error_msg = f"Failed to process page {page_num + 1}: {str(e)}"
-                    logger.error(error_msg)
-                    all_text.append(f"--- Page {page_num+1} ---\n\n[Error: Failed to extract text from this page]")
+                # Process results and maintain page order
+                for page_num, result in enumerate(results):
+                    if isinstance(result, Exception):
+                        logger.error(f"Page {page_num+1} processing failed: {str(result)}")
+                        all_text[page_num] = f"--- Page {page_num+1} ---\n\n[Error: Failed to extract text from this page]"
+                    else:
+                        all_text[page_num] = result
+                        
+            except Exception as e:
+                logger.error(f"Parallel processing failed: {str(e)}")
+                # Fallback to sequential processing
+                logger.info("Falling back to sequential processing...")
+                all_text = await self._process_pdf_pages_sequentially(pdf_document, page_count_to_process, vision_model)
             
             # Close the PDF document
             pdf_document.close()
@@ -377,6 +382,96 @@ class GroqVisionParser(BaseDocumentParser):
         except Exception as e:
             logger.error(f"PDF processing failed: {str(e)}", exc_info=True)
             raise ParsingError(f"Failed to process PDF: {str(e)}")
+    
+    async def _process_single_pdf_page(self, pdf_document, page_num: int, vision_model, semaphore: asyncio.Semaphore) -> str:
+        """Process a single PDF page with concurrency control.
+        
+        Args:
+            pdf_document: PyMuPDF document object
+            page_num: Page number (0-indexed)
+            vision_model: Initialized vision model
+            semaphore: Semaphore to control concurrency
+            
+        Returns:
+            Formatted text content for the page
+        """
+        async with semaphore:
+            try:
+                # Convert page to image in thread pool to avoid blocking
+                loop = asyncio.get_event_loop()
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    base64_image = await loop.run_in_executor(
+                        executor, 
+                        self._convert_pdf_page_to_base64, 
+                        pdf_document, 
+                        page_num
+                    )
+                
+                # Use vision model to extract text
+                page_text = await vision_model.parse_text_from_image(
+                    base64_image=base64_image,
+                    prompt=self.prompt_template
+                )
+                logger.info(f"Successfully extracted text from page {page_num + 1}")
+                return f"--- Page {page_num+1} ---\n\n{page_text}"
+                
+            except Exception as e:
+                logger.error(f"Failed to process page {page_num + 1}: {str(e)}")
+                raise e
+    
+    def _convert_pdf_page_to_base64(self, pdf_document, page_num: int) -> str:
+        """Convert a PDF page to base64 image (synchronous operation for thread pool).
+        
+        Args:
+            pdf_document: PyMuPDF document object
+            page_num: Page number (0-indexed)
+            
+        Returns:
+            Base64 encoded image string
+        """
+        # Get the page
+        page = pdf_document[page_num]
+        
+        # Convert page to pixmap (image)
+        pix = page.get_pixmap()
+        
+        # Convert pixmap to PNG image data
+        png_data = pix.tobytes("png")
+        
+        # Convert PNG data to base64
+        return base64.b64encode(png_data).decode('utf-8')
+    
+    async def _process_pdf_pages_sequentially(self, pdf_document, page_count_to_process: int, vision_model) -> List[str]:
+        """Fallback method to process PDF pages sequentially.
+        
+        Args:
+            pdf_document: PyMuPDF document object
+            page_count_to_process: Number of pages to process
+            vision_model: Initialized vision model
+            
+        Returns:
+            List of formatted text content for each page
+        """
+        all_text = []
+        
+        for page_num in range(page_count_to_process):
+            try:
+                # Get page as base64 image
+                base64_image = self._convert_pdf_page_to_base64(pdf_document, page_num)
+                
+                # Use vision model to extract text
+                page_text = await vision_model.parse_text_from_image(
+                    base64_image=base64_image,
+                    prompt=self.prompt_template
+                )
+                all_text.append(f"--- Page {page_num+1} ---\n\n{page_text}")
+                logger.info(f"Successfully extracted text from page {page_num + 1} (sequential)")
+                
+            except Exception as e:
+                logger.error(f"Failed to process page {page_num + 1}: {str(e)}")
+                all_text.append(f"--- Page {page_num+1} ---\n\n[Error: Failed to extract text from this page]")
+        
+        return all_text
     
     async def _parse_file(self, file_path: str, config: Dict[str, Any]) -> List[Document]:
         """Implementation of abstract method from BaseDocumentParser.
