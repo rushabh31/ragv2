@@ -82,12 +82,17 @@ Answer: """
                 logger.error(f"Failed to load template: {str(e)}")
                 raise GenerationError(f"Template loading failed: {str(e)}")
     
-    async def _generate_response(self, query: str, context: List[Document], config: Dict[str, Any]) -> str:
+    async def _generate_response(self, 
+                               query: str, 
+                               documents: List[Document], 
+                               conversation_history: Optional[List[Dict[str, str]]] = None, 
+                               config: Dict[str, Any] = None) -> str:
         """Generate response using Groq model.
         
         Args:
             query: User query
-            context: List of relevant documents
+            documents: List of relevant documents
+            conversation_history: Optional conversation history
             config: Generation configuration
             
         Returns:
@@ -100,10 +105,11 @@ Answer: """
             # Render prompt template
             prompt = self._template.render(
                 query=query,
-                context=context
+                context=documents
             )
             
-            # Get generation parameters from config
+            # Get generation parameters from config (with defaults)
+            config = config or {}
             gen_config = {
                 "temperature": config.get("temperature", 0.2),
                 "max_tokens": config.get("max_tokens", 1024),
@@ -112,8 +118,8 @@ Answer: """
             
             logger.debug(f"Generating response with Groq model: {self.model_name}")
             
-            # Check if we have chat history
-            chat_history = config.get("chat_history", [])
+            # Use conversation_history parameter instead of config
+            chat_history = conversation_history or []
             
             if chat_history:
                 # Build messages for chat completion

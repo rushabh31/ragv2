@@ -35,11 +35,13 @@ class VertexGenerator(BaseGenerator):
         config_manager = ConfigManager()
         system_config = config_manager.get_config("generation")
         if system_config:
-            self.generation_provider = system_config.get("provider", "vertex")
+            provider = system_config.get("provider", "vertex")
+            # Map vertex to vertex_ai for the GenerationModelFactory
+            self.generation_provider = "vertex_ai" if provider == "vertex" else provider
             self.generation_config = system_config.get("config", {})
         else:
-            # Default to vertex if no generation config found
-            self.generation_provider = "vertex"
+            # Default to vertex_ai if no generation config found
+            self.generation_provider = "vertex_ai"
             self.generation_config = {}
         
     async def _init_components(self):

@@ -1,19 +1,35 @@
-"""
-Groq Vision Parser for Document Processing.
+"""Groq Vision Parser for Document Processing.
 
 This parser uses Groq's vision models to extract text and structure from documents,
-particularly PDFs and images, using the universal authentication system.
+including PDFs, images, Word documents (.doc/.docx), and Excel files (.xls/.xlsx).
+
+For PDF documents, each page is converted to an image and processed separately.
+For Word and Excel documents, they are first converted to PDFs using LibreOffice or Pandoc,
+then each page is converted to an image and processed.
+
+Dependencies:
+- PyMuPDF (fitz): For PDF page extraction and conversion to images
+- LibreOffice: For converting Word and Excel documents to PDFs (optional)
+- Pandoc: Alternative for converting Word documents to PDFs (optional)
+
+Note: Either LibreOffice or Pandoc must be installed for Word/Excel processing.
 """
 
 import logging
 import base64
 import os
-from typing import List, Dict, Any, Optional
+import fitz  # PyMuPDF
+import tempfile
+import subprocess
+import shutil
+import uuid
+from pathlib import Path
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 
 from src.models.vision.vision_factory import VisionModelFactory
 from src.rag.ingestion.parsers.base_parser import BaseDocumentParser
-from src.rag.shared.models.schema import FullDocument, DocumentType, DocumentMetadata
+from src.rag.shared.models.schema import DocumentType, DocumentMetadata, FullDocument, PageMetadata, DocumentPage
 from src.rag.core.exceptions.exceptions import ParsingError
 from src.rag.core.interfaces.base import Document
 
@@ -28,6 +44,9 @@ class GroqVisionParser(BaseDocumentParser):
         
         Args:
             config: Configuration dictionary containing model settings
+                - model_name: Optional model name (default: "llama-3.2-11b-vision-preview")
+                - prompt_template: Optional prompt template (default: "Extract and structure the text content from this document. Preserve formatting and structure.")
+                - max_pages: Maximum number of pages to process in PDF documents (default: 50)
         """
         super().__init__(config)
         self.model_name = config.get("model_name", "llama-3.2-11b-vision-preview")
@@ -86,14 +105,35 @@ class GroqVisionParser(BaseDocumentParser):
             # Get vision model
             vision_model = await self._get_vision_model()
             
-            # Convert file to base64
-            base64_content = self._convert_to_base64(file_path)
+            # Get document type
+            doc_type = self.get_document_type(file_path)
             
-            # Extract text using vision model
-            extracted_text = await vision_model.parse_text_from_image(
-                base64_image=base64_content,
-                prompt=self.prompt_template
-            )
+            # Initialize page count and extracted text
+            page_count = 1
+            extracted_text = ""
+            
+            # Handle based on document type
+            file_ext = Path(file_path).suffix.lower()
+            
+            if doc_type == DocumentType.PDF:
+                # Process PDF using PyMuPDF
+                extracted_text, page_count = await self._parse_pdf_document(file_path, vision_model)
+                
+            elif file_ext in [".doc", ".docx"]:
+                # Process Word documents
+                extracted_text, page_count = await self._parse_word_document(file_path, vision_model)
+                
+            elif file_ext in [".xls", ".xlsx"]:
+                # Process Excel documents
+                extracted_text, page_count = await self._parse_excel_document(file_path, vision_model)
+                
+            else:
+                # For regular images, use the standard approach
+                base64_content = self._convert_to_base64(file_path)
+                extracted_text = await vision_model.parse_text_from_image(
+                    base64_image=base64_content,
+                    prompt=self.prompt_template
+                )
             
             if not extracted_text or not extracted_text.strip():
                 logger.warning(f"No text extracted from {file_path}")
@@ -102,26 +142,241 @@ class GroqVisionParser(BaseDocumentParser):
             # Create document metadata
             doc_metadata = DocumentMetadata(
                 title=metadata.get("title", os.path.basename(file_path)),
-                filename=os.path.basename(file_path),
-                document_type=self.get_document_type(file_path).value,
-                created_at=datetime.now(),
-                page_count=1,  # Vision models typically process the whole document as one
-                **metadata if metadata else {}
+                source=metadata.get("source", file_path),  # Add source field as required by DocumentMetadata
+                document_type=doc_type.value,
+                page_count=page_count,
+                **{k: v for k, v in (metadata or {}).items() if k not in ["title", "source", "document_type", "page_count"]}
             )
             
-            # Create full document
-            document = FullDocument(
-                content=extracted_text,
-                metadata=doc_metadata.dict(),
-                document_id=metadata.get("document_id") if metadata else None
+            # Create document_id
+            document_id = metadata.get("document_id") if metadata and "document_id" in metadata else str(uuid.uuid4())
+            
+            # Create pages list for FullDocument
+            pages = []
+            
+            # If this is a multi-page document (PDF, Word, Excel)
+            if isinstance(extracted_text, str) and "--- Page " in extracted_text:
+                # Split the text by page markers
+                page_texts = []
+                if doc_type == DocumentType.PDF or file_ext in [".doc", ".docx", ".xls", ".xlsx"]:
+                    page_parts = extracted_text.split("--- Page ")
+                    # First part is empty or header
+                    for i, page_part in enumerate(page_parts):
+                        if i == 0 and not page_part.strip():
+                            continue
+                        # Extract page number and content
+                        if i == 0:
+                            # Handle case where there's text before the first page marker
+                            page_texts.append((1, page_part))
+                        else:
+                            # Format is "N ---\n\nContent"
+                            page_num_str, *content_parts = page_part.split("---", 1)
+                            try:
+                                page_num = int(page_num_str.strip())
+                                page_content = "---".join(content_parts).strip()
+                                page_texts.append((page_num, page_content))
+                            except ValueError:
+                                # If page number parsing fails, just add as is
+                                page_texts.append((i, page_part))
+                else:
+                    # For single page documents
+                    page_texts = [(1, extracted_text)]
+            else:
+                # For single page documents or when there are no page markers
+                page_texts = [(1, extracted_text)]
+            
+            # Combine all page texts into one string for compatibility with Document interface
+            all_page_texts = []
+            for page_num, page_content in page_texts:
+                all_page_texts.append(f"--- Page {page_num} ---\n\n{page_content}")
+            
+            # Combine all text
+            combined_text = "\n\n".join(all_page_texts)
+            
+            # Create a Document object with dictionary metadata (not Pydantic model)
+            # This is compatible with how the service code expects to work with documents
+            document = Document(
+                content=combined_text,
+                metadata={
+                    **doc_metadata.dict(),  # Convert Pydantic model to dict
+                    "extraction_method": "groq_vision",
+                    "document_id": document_id,
+                    "page_count": page_count
+                }
             )
             
-            logger.info(f"Successfully parsed document with {len(extracted_text)} characters")
+            logger.info(f"Successfully parsed document with {len(combined_text)} characters")
             return [document]
             
         except Exception as e:
             logger.error(f"Groq vision parsing failed for {file_path}: {str(e)}", exc_info=True)
             raise ParsingError(f"Failed to parse document with Groq vision: {str(e)}")
+    
+    async def _parse_word_document(self, file_path: str, vision_model) -> Tuple[str, int]:
+        """Process a Word document by first converting it to PDF, then to images for vision processing.
+        
+        Args:
+            file_path: Path to the Word document file
+            vision_model: Initialized vision model
+            
+        Returns:
+            Tuple of (extracted text, page count)
+        """
+        try:
+            # Create a temporary directory
+            with tempfile.TemporaryDirectory() as temp_dir:
+                temp_pdf_path = os.path.join(temp_dir, "converted_document.pdf")
+                
+                # Convert Word document to PDF using LibreOffice if available
+                if shutil.which("soffice"):
+                    logger.info(f"Converting Word document to PDF using LibreOffice: {file_path}")
+                    cmd = [
+                        "soffice", "--headless", "--convert-to", "pdf",
+                        "--outdir", temp_dir, file_path
+                    ]
+                    process = subprocess.run(cmd, capture_output=True, text=True)
+                    
+                    if process.returncode != 0:
+                        logger.error(f"LibreOffice conversion failed: {process.stderr}")
+                        raise ParsingError(f"Failed to convert Word document to PDF: {process.stderr}")
+                    
+                    # Get the output PDF path (LibreOffice maintains original filename with .pdf extension)
+                    pdf_filename = os.path.splitext(os.path.basename(file_path))[0] + ".pdf"
+                    temp_pdf_path = os.path.join(temp_dir, pdf_filename)
+                else:
+                    # Fallback: Try to use Pandoc if available
+                    if shutil.which("pandoc"):
+                        logger.info(f"Converting Word document to PDF using Pandoc: {file_path}")
+                        cmd = [
+                            "pandoc", file_path, "-o", temp_pdf_path
+                        ]
+                        process = subprocess.run(cmd, capture_output=True, text=True)
+                        
+                        if process.returncode != 0:
+                            logger.error(f"Pandoc conversion failed: {process.stderr}")
+                            raise ParsingError(f"Failed to convert Word document to PDF: {process.stderr}")
+                    else:
+                        logger.error("Neither LibreOffice nor Pandoc found for Word document conversion")
+                        raise ParsingError("Word document conversion requires LibreOffice or Pandoc")
+                
+                # Now process the converted PDF
+                if os.path.exists(temp_pdf_path):
+                    return await self._parse_pdf_document(temp_pdf_path, vision_model)
+                else:
+                    raise ParsingError("PDF conversion failed, no output file created")
+        
+        except Exception as e:
+            logger.error(f"Word document processing failed: {str(e)}", exc_info=True)
+            raise ParsingError(f"Failed to process Word document: {str(e)}")
+    
+    async def _parse_excel_document(self, file_path: str, vision_model) -> Tuple[str, int]:
+        """Process an Excel document by first converting it to PDF, then to images for vision processing.
+        
+        Args:
+            file_path: Path to the Excel file
+            vision_model: Initialized vision model
+            
+        Returns:
+            Tuple of (extracted text, page count)
+        """
+        try:
+            # Create a temporary directory
+            with tempfile.TemporaryDirectory() as temp_dir:
+                temp_pdf_path = os.path.join(temp_dir, "converted_spreadsheet.pdf")
+                
+                # Convert Excel to PDF using LibreOffice if available
+                if shutil.which("soffice"):
+                    logger.info(f"Converting Excel document to PDF using LibreOffice: {file_path}")
+                    cmd = [
+                        "soffice", "--headless", "--convert-to", "pdf",
+                        "--outdir", temp_dir, file_path
+                    ]
+                    process = subprocess.run(cmd, capture_output=True, text=True)
+                    
+                    if process.returncode != 0:
+                        logger.error(f"LibreOffice conversion failed: {process.stderr}")
+                        raise ParsingError(f"Failed to convert Excel document to PDF: {process.stderr}")
+                    
+                    # Get the output PDF path (LibreOffice maintains original filename with .pdf extension)
+                    pdf_filename = os.path.splitext(os.path.basename(file_path))[0] + ".pdf"
+                    temp_pdf_path = os.path.join(temp_dir, pdf_filename)
+                else:
+                    logger.error("LibreOffice not found for Excel document conversion")
+                    raise ParsingError("Excel document conversion requires LibreOffice")
+                
+                # Now process the converted PDF
+                if os.path.exists(temp_pdf_path):
+                    return await self._parse_pdf_document(temp_pdf_path, vision_model)
+                else:
+                    raise ParsingError("PDF conversion failed, no output file created")
+        
+        except Exception as e:
+            logger.error(f"Excel document processing failed: {str(e)}", exc_info=True)
+            raise ParsingError(f"Failed to process Excel document: {str(e)}")
+    
+    async def _parse_pdf_document(self, file_path: str, vision_model) -> Tuple[str, int]:
+        """Process a PDF document by converting each page to an image and extracting text.
+        
+        Args:
+            file_path: Path to the PDF file
+            vision_model: Initialized vision model
+            
+        Returns:
+            Tuple of (extracted text, page count)
+        """
+        try:
+            # Open the PDF file
+            pdf_document = fitz.open(file_path)
+            page_count = len(pdf_document)
+            
+            # Check if PDF exceeds maximum page count
+            if page_count > self.max_pages:
+                logger.warning(f"PDF has {page_count} pages, exceeding max limit of {self.max_pages}. Will only process first {self.max_pages} pages.")
+                page_count_to_process = self.max_pages
+            else:
+                page_count_to_process = page_count
+            
+            # Process each page
+            all_text = []
+            
+            for page_num in range(page_count_to_process):
+                logger.info(f"Processing page {page_num + 1} of {page_count}")
+                
+                # Get the page
+                page = pdf_document[page_num]
+                
+                # Convert page to pixmap (image)
+                pix = page.get_pixmap()
+                
+                # Convert pixmap to PNG image data
+                png_data = pix.tobytes("png")
+                
+                # Convert PNG data to base64
+                base64_image = base64.b64encode(png_data).decode('utf-8')
+                
+                # Process image with vision model
+                try:
+                    page_text = await vision_model.parse_text_from_image(
+                        base64_image=base64_image,
+                        prompt=self.prompt_template
+                    )
+                    all_text.append(f"--- Page {page_num+1} ---\n\n{page_text}")
+                    logger.info(f"Successfully extracted text from page {page_num + 1}")
+                except Exception as e:
+                    error_msg = f"Failed to process page {page_num + 1}: {str(e)}"
+                    logger.error(error_msg)
+                    all_text.append(f"--- Page {page_num+1} ---\n\n[Error: Failed to extract text from this page]")
+            
+            # Close the PDF document
+            pdf_document.close()
+            
+            # Combine text from all pages
+            combined_text = "\n\n".join(all_text)
+            return combined_text, page_count
+            
+        except Exception as e:
+            logger.error(f"PDF processing failed: {str(e)}", exc_info=True)
+            raise ParsingError(f"Failed to process PDF: {str(e)}")
     
     async def _parse_file(self, file_path: str, config: Dict[str, Any]) -> List[Document]:
         """Implementation of abstract method from BaseDocumentParser.
@@ -161,7 +416,7 @@ class GroqVisionParser(BaseDocumentParser):
         Returns:
             List of supported file extensions
         """
-        return [".pdf", ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".webp"]
+        return [".pdf", ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".webp", ".doc", ".docx", ".xls", ".xlsx"]
     
     def get_parser_info(self) -> Dict[str, Any]:
         """Get information about this parser.

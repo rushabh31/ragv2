@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 load_dotenv()
 
-from examples.rag.chatbot.api.router import router as chatbot_router
+from .router import router as chatbot_router
 from src.rag.shared.utils.config_manager import ConfigManager
 from src.rag.shared.middleware.middleware_factory import MiddlewareFactory
 from src.rag.core.exceptions.exceptions import (

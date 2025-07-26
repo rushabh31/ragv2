@@ -3,17 +3,20 @@ from typing import Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Header, Query, status, Form
 import json
 
-from examples.rag.chatbot.api.models import (
+from .models import (
     ChatRequest,
     ChatResponse,
     SessionHistoryResponse,
     SessionListResponse,
     SOEIDHistoryResponse,
     SessionHistoryWithSOEIDResponse,
+    SessionListForSOEIDResponse,
+    ThreadListResponse,
+    MemoryStatsResponse,
     FeedbackRequest,
     FeedbackResponse
 )
-from examples.rag.chatbot.api.service import ChatbotService
+from .service import ChatbotService
 from src.rag.core.exceptions.exceptions import GenerationError, MemoryError
 
 logger = logging.getLogger(__name__)
@@ -182,3 +185,66 @@ async def debug_all_messages(service: ChatbotService = Depends(get_chatbot_servi
         except Exception as e:
             continue
     return {"messages": all_messages, "total": len(all_messages)}
+
+
+# New LangGraph Memory Endpoints
+
+@router.get("/sessions/{soeid}", response_model=SessionListForSOEIDResponse)
+async def get_sessions_for_soeid(
+    soeid: str,
+    service: ChatbotService = Depends(get_chatbot_service)
+):
+    """Get all sessions for a specific SOEID with metadata."""
+    result = await service.get_sessions_for_soeid(soeid)
+    return SessionListForSOEIDResponse(**result)
+
+
+@router.get("/threads", response_model=ThreadListResponse)
+async def get_all_threads(
+    service: ChatbotService = Depends(get_chatbot_service)
+):
+    """Get all threads (sessions) in the system."""
+    result = await service.get_all_threads()
+    return ThreadListResponse(**result)
+
+
+@router.get("/memory/stats", response_model=MemoryStatsResponse)
+async def get_memory_stats(
+    service: ChatbotService = Depends(get_chatbot_service)
+):
+    """Get memory system statistics."""
+    result = await service.get_memory_stats()
+    return MemoryStatsResponse(**result)
+
+
+@router.get("/sessions/{soeid}/history", response_model=SOEIDHistoryResponse)
+async def get_soeid_history_by_sessions(
+    soeid: str,
+    limit: Optional[int] = Query(None, description="Maximum number of sessions to return"),
+    service: ChatbotService = Depends(get_chatbot_service)
+):
+    """Get chat history for a SOEID, organized by sessions (alternative endpoint)."""
+    result = await service.get_all_history_by_soeid(soeid)
+    
+    # Apply limit if specified
+    if limit and result.get("sessions"):
+        result["sessions"] = result["sessions"][:limit]
+        result["total_sessions"] = len(result["sessions"])
+    
+    return SOEIDHistoryResponse(**result)
+
+
+@router.get("/threads/{thread_id}/history", response_model=SessionHistoryWithSOEIDResponse)
+async def get_thread_history(
+    thread_id: str,
+    limit: Optional[int] = Query(None, description="Maximum number of messages to return"),
+    service: ChatbotService = Depends(get_chatbot_service)
+):
+    """Get chat history for a specific thread (session) ID."""
+    result = await service.get_session_history_with_soeid(thread_id)
+    
+    # Apply limit if specified
+    if limit and result.get("messages"):
+        result["messages"] = result["messages"][-limit:]  # Get most recent messages
+    
+    return SessionHistoryWithSOEIDResponse(**result)

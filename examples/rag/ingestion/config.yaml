@@ -1,99 +1,109 @@
-##############################################
-# Ingestion Service Configuration
-##############################################
+# Multi-Provider RAG Ingestion Configuration
+# This configuration demonstrates how to use different embedding providers
+# with the universal authentication system
 
-# System-wide settings
-system:
-  log_level: INFO
-  request_id_header: X-Request-ID
-  environment: development
+# Document Processing Configuration
+document_processing:
+  chunk_size: 1000
+  chunk_overlap: 200
+  max_chunks_per_document: 100
 
-# Security settings
-security:
-  api_keys:
-    - name: default
-      key: "${API_KEY}"
-      roles:
-        - user
-    - name: admin
-      key: "${ADMIN_API_KEY}"
-      roles:
-        - user
-        - admin
-  rate_limiting:
-    enabled: true
-    provider: local
-    requests: 100
-    period_seconds: 60
+# Parser Configuration
+parser:
+  provider: "groq_vision_parser"
+  config:
+    model_name: "meta-llama/llama-4-scout-17b-16e-instruct"
+    prompt_template: "Extract and structure the text content from this document."
 
-# Cache settings
-cache:
-  enabled: true
-  provider: local
-  default_ttl_seconds: 3600
-  max_size: 10000
-  cleanup_interval_seconds: 300
+# Generation Configuration (for semantic chunking and other LLM tasks)
+generation:
+  provider: "groq"
+  config:
+    model_name: "meta-llama/llama-4-scout-17b-16e-instruct"
+    temperature: 0.1
+    max_tokens: 2048
+    top_p: 0.9
 
-# Ingestion API settings
-ingestion:
+# Embedding Configuration - Choose one provider
+embedding:
+  # Option 1: Sentence Transformer Embedding (Local, No API Key Required)
+  provider: "sentence_transformer"
+  config:
+    model: "all-mpnet-base-v2"
+    device: "cpu"  # or "cuda" if GPU available
+    normalize_embeddings: true
+    batch_size: 32
+
+  # Option 2: Vertex AI Embedding (New Universal Auth)
+  # provider: "vertex_ai"
+  # config:
+  #   model: "text-embedding-004"
+  #   project_id: "${PROJECT_ID}"  # From environment
+  #   location: "us-central1"
+  #   batch_size: 100
+
+  # Option 3: OpenAI Universal Embedding (New Universal Auth)
+  # provider: "openai_universal"
+  # config:
+  #   model: "all-mpnet-base-v2"
+  #   base_url: "https://api.openai.com/v1"  # Optional custom base URL
+  #   batch_size: 100
+
+  # Option 4: Azure OpenAI Embedding (New Universal Auth)
+  # provider: "azure_openai"
+  # config:
+  #   model: "modelname"
+  #   azure_endpoint: "https://your-resource.openai.azure.com"
+  #   api_version: "2023-05-15"
+  #   batch_size: 100
+
+  # Option 5: Original Vertex Embedding (Legacy)
+  # provider: "vertex"
+  # config:
+  #   model: "textembedding-gecko-multilingual"
+  #   batch_size: 100
+
+  # Option 6: Original OpenAI Embedding (Legacy)
+  # provider: "openai"
+  # config:
+  #   model: "text-embedding-ada-002"
+  #   batch_size: 100
+
+# Vector Store Configuration
+vector_store:
+  provider: "faiss"
+  config:
+    dimension: 384  # Adjust based on embedding model (all-MiniLM-L12-v2 = 384 dims)
+    index_type: "HNSW"  # Options: "Flat", "HNSW", "IVF"
+    index_path: "./data/faiss_index.bin"
+    metadata_path: "./data/faiss_metadata.pkl"
+
+# API Configuration
+api:
+  host: "0.0.0.0"
   port: 8000
-  host: 0.0.0.0
-  workers: 4
-  parsers:
-    default_parser: vision_parser
-    vision_parser:
-      enabled: true
-      model: gemini-1.5-pro-002
-      max_pages: 100
-    simple_text:
-      enabled: true
-    pymupdf:
-      enabled: false
-    openai_vision:
-      enabled: false
-      model: gpt-4-vision-preview
-      api_key: "${OPENAI_API_KEY}"
-      max_pages: 50
-      # For Azure OpenAI, uncomment and configure these
-      # api_base: "https://your-resource.openai.azure.com"
-      # api_version: "2023-12-01-preview"
-      # api_type: "azure"
-  chunking:
-    strategy: page_based
-    # Options for page-based chunking
-    min_chunk_size: 100
-    use_headers_fallback: true
-    # Keep fixed size options for backwards compatibility
-    chunk_size: 1000
-    chunk_overlap: 200
-  embedding:
-    # Choose from: vertex_ai, openai_universal, azure_openai, vertex (legacy), openai (legacy)
-    provider: vertex_ai
-    config:
-      model: text-embedding-004
-      batch_size: 100
-  vector_store:
-    # Choose vector store type: "faiss", "pgvector", or "chromadb"
-    type: pgvector
-    # Common settings
-    # path: ./data/vector_store
-    dimension: 384  # Must match embedding model dimension (384 for all-MiniLM-L6-v2)
-    
-    # FAISS specific settings
-    faiss:
-      index_type: HNSW     # Options: Flat, HNSW, IVF
-      metric: inner_product # Options: inner_product, l2
-      nlist: 100           # For IVF indexes
-      nprobe: 10           # For IVF search
-    
-    # PgVector specific settings
-    pgvector:
-      connection_string: "postgresql://localhost:5432/postgres"
-      table_name: "document_embeddings"
-      index_method: "hnsw"  # Options: ivfflat, hnsw
-    
-    # ChromaDB specific settings
-    chromadb:
-      persist_directory: "./data/chromadb"
-      collection_name: "document_embeddings"
-      distance_function: "cosine"  # Options: cosine, l2, ip
+  cors_origins: ["*"]
+  api_key_required: true
+
+# Logging Configuration
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# Health Check Configuration
+health_check:
+  enabled: true
+  interval_seconds: 30
+  timeout_seconds: 10
+
+# Authentication Health Monitoring
+auth_monitoring:
+  enabled: true
+  log_health_status: true
+  validate_on_startup: true
+
+# Processing Configuration
+processing:
+  max_concurrent_documents: 5
+  retry_attempts: 3
+  retry_delay_seconds: 1

@@ -53,8 +53,10 @@ class VectorRetriever(BaseRetriever):
                 raise ValueError(f"Unsupported vector store type: {vector_store_type}. Supported types: faiss, pgvector")
         
         if self._embedder is None:
-            # Get embedder configuration
-            embedder_config = self.config_manager.get_section("ingestion.embedding", {})
+            # Get embedder configuration - try chatbot config first, then ingestion config
+            embedder_config = self.config_manager.get_section("embedding", {})
+            if not embedder_config:
+                embedder_config = self.config_manager.get_section("ingestion.embedding", {})
             # Use factory to create the appropriate embedder based on config
             self._embedder = await EmbedderFactory.create_embedder(embedder_config)
     

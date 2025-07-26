@@ -10,7 +10,7 @@ from src.rag.chatbot.retrievers.vector_retriever import VectorRetriever
 from src.rag.chatbot.rerankers.cross_encoder_reranker import CrossEncoderReranker
 from src.rag.chatbot.rerankers.custom_reranker import CustomReranker
 from src.rag.chatbot.generators.generator_factory import GeneratorFactory
-from src.rag.chatbot.memory.simple_memory import SimpleMemory
+
 from src.rag.chatbot.workflow.workflow_manager import WorkflowManager
 from src.rag.shared.models.schema import FullDocument, ChatMessage, ChatSession
 from src.rag.shared.cache.cache_manager import CacheManager
@@ -52,12 +52,25 @@ class ChatbotService:
         Returns:
             Memory instance
         """
-        from src.rag.memory.memory_singleton import memory_singleton
-        return await memory_singleton.get_memory()
+        async with ChatbotService._memory_lock:
+            if ChatbotService._memory_instance is None:
+                from src.rag.chatbot.memory.memory_factory import MemoryFactory
+                memory_config = self.config_manager.get_section("chatbot.memory", {})
+                ChatbotService._memory_instance = MemoryFactory.create_memory(memory_config)
+                logger.info("Created singleton memory instance")
+            return ChatbotService._memory_instance
     
     async def reset_memory_reference(self):
         """Reset the local memory reference (useful when singleton is reset)."""
         self._memory = None
+    
+    @classmethod
+    async def reset_singleton_memory(cls):
+        """Reset the singleton memory instance (useful for testing or reconfiguration)."""
+        async with cls._memory_lock:
+            if cls._memory_instance is not None:
+                logger.info("Resetting singleton memory instance")
+                cls._memory_instance = None
     
     async def _init_components(self):
         """Initialize components lazily."""
@@ -429,3 +442,144 @@ class ChatbotService:
     async def delete_history_by_session_id(self, session_id: str) -> bool:
         await self._init_components()
         return await self._memory.clear_session(session_id)
+    
+    async def get_sessions_for_soeid(self, soeid: str) -> Dict[str, Any]:
+        """Get all sessions for a specific SOEID with metadata."""
+        await self._init_components()
+        try:
+            # Get all sessions for the SOEID
+            sessions_data = await self._memory.get_user_history_by_soeid(soeid)
+            
+            # Extract session metadata
+            sessions = []
+            for session_data in sessions_data:
+                session_info = {
+                    "session_id": session_data["session_id"],
+                    "message_count": session_data["message_count"],
+                    "created_at": session_data.get("created_at"),
+                    "last_active": session_data.get("last_active")
+                }
+                sessions.append(session_info)
+            
+            return {
+                "soeid": soeid,
+                "sessions": sessions,
+                "total_sessions": len(sessions),
+                "metadata": {"retrieved_at": datetime.now().isoformat()}
+            }
+        except Exception as e:
+            logger.error(f"Error retrieving sessions for SOEID: {str(e)}", exc_info=True)
+            return {
+                "soeid": soeid,
+                "sessions": [],
+                "total_sessions": 0,
+                "metadata": {"error": str(e)}
+            }
+    
+    async def get_all_threads(self) -> Dict[str, Any]:
+        """Get all threads (sessions) in the system."""
+        await self._init_components()
+        try:
+            # Check if the memory implementation supports listing threads
+            if hasattr(self._memory, '_list_thread_ids'):
+                thread_ids = await self._memory._list_thread_ids()
+                
+                threads = []
+                for thread_id in thread_ids:
+                    # Get basic info for each thread
+                    messages = await self._memory.get_history(thread_id, limit=1)
+                    if messages:
+                        thread_info = {
+                            "thread_id": thread_id,
+                            "session_id": thread_id,  # Same as thread_id in our case
+                            "soeid": messages[0].get("soeid", "unknown"),
+                            "last_message_time": messages[0].get("timestamp"),
+                            "has_messages": len(messages) > 0
+                        }
+                        threads.append(thread_info)
+                
+                return {
+                    "threads": threads,
+                    "total_threads": len(threads),
+                    "metadata": {"retrieved_at": datetime.now().isoformat()}
+                }
+            else:
+                # Fallback for memory implementations that don't support thread listing
+                return {
+                    "threads": [],
+                    "total_threads": 0,
+                    "metadata": {"error": "Thread listing not supported by current memory implementation"}
+                }
+        except Exception as e:
+            logger.error(f"Error retrieving all threads: {str(e)}", exc_info=True)
+            return {
+                "threads": [],
+                "total_threads": 0,
+                "metadata": {"error": str(e)}
+            }
+    
+    async def get_memory_stats(self) -> Dict[str, Any]:
+        """Get memory system statistics."""
+        await self._init_components()
+        try:
+            # Get basic memory info
+            memory_type = type(self._memory).__name__
+            store_type = getattr(self._memory, '_store_type', 'unknown')
+            
+            # Initialize counters
+            total_sessions = 0
+            total_messages = 0
+            unique_soeids = set()
+            oldest_session = None
+            newest_session = None
+            
+            # Check if we can get thread listing
+            if hasattr(self._memory, '_list_thread_ids'):
+                thread_ids = await self._memory._list_thread_ids()
+                total_sessions = len(thread_ids)
+                
+                # Analyze each thread
+                for thread_id in thread_ids:
+                    messages = await self._memory.get_history(thread_id)
+                    total_messages += len(messages)
+                    
+                    for message in messages:
+                        # Collect SOEIDs
+                        soeid = message.get("soeid")
+                        if soeid:
+                            unique_soeids.add(soeid)
+                        
+                        # Track session timestamps
+                        timestamp_str = message.get("timestamp")
+                        if timestamp_str:
+                            try:
+                                timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                                if oldest_session is None or timestamp < oldest_session:
+                                    oldest_session = timestamp
+                                if newest_session is None or timestamp > newest_session:
+                                    newest_session = timestamp
+                            except Exception:
+                                continue
+            
+            return {
+                "memory_type": memory_type,
+                "store_type": store_type,
+                "total_sessions": total_sessions,
+                "total_messages": total_messages,
+                "unique_soeids": len(unique_soeids),
+                "oldest_session": oldest_session,
+                "newest_session": newest_session,
+                "metadata": {"retrieved_at": datetime.now().isoformat()}
+            }
+        except Exception as e:
+            logger.error(f"Error retrieving memory stats: {str(e)}", exc_info=True)
+            return {
+                "memory_type": "unknown",
+                "store_type": "unknown",
+                "total_sessions": 0,
+                "total_messages": 0,
+                "unique_soeids": 0,
+                "oldest_session": None,
+                "newest_session": None,
+                "metadata": {"error": str(e)}
+            }

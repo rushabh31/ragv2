@@ -41,17 +41,16 @@ chatbot:
   workers: 4
   retrieval:
     vector_store:
-      type: pgvector
-      connection_string: "postgresql://localhost:5432/postgres"
-      table_name: "document_embeddings"
-      dimension: 384  # Must match embedding model dimension
-      index_method: "hnsw"  # Options: ivfflat, hnsw
+      type: faiss
+      index_path: "./data/indices/faiss.index"
+      metadata_path: "./data/indices/faiss_metadata.json"
+      dimension: 768  # Match embedding model dimension from sentence_transformer
+      index_method: "hnsw"
     top_k: 5
     similarity_threshold: 0.7
   reranking:
     enabled: true
-    type: custom  # Options: custom, cross_encoder
-    model_name: cross-encoder/ms-marco-MiniLM-L-6-v2  # Only used for cross_encoder type
+    type: custom
     top_k: 3
     score_threshold: 0.5
     # Custom reranker weights
@@ -61,25 +60,43 @@ chatbot:
     position_weight: 0.1
     min_score_threshold: 0.0
   generation:
-    # Choose from: vertex, anthropic_vertex, openai, azure_openai
-    provider: vertex
-    config:
-      model_name: gemini-1.5-pro-002
-      temperature: 0.2
-      max_tokens: 1024
-      top_p: 0.95
-      prompt_template: ./config/prompts/chatbot/rag_prompt.jinja2
+    # Using Groq as the provider
+    provider: "groq"
+    # Groq settings
+    model_name: "meta-llama/llama-4-scout-17b-16e-instruct" 
+    temperature: 0.2
+    max_output_tokens: 1024
+    top_p: 0.95
+    templates_dir: config/prompts/chatbot
+    template: rag_prompt.jinja2
   memory:
-    # Memory type: "simple", "mem0", or "langgraph"
-    type: langgraph
+    # Memory type: "simple", "mem0", "langgraph", or "langgraph_checkpoint"
+    type: langgraph_checkpoint
     # LangGraph memory settings
     store_type: in_memory  # "in_memory" or "postgres"
-    embedding_dimensions: 384
+    embedding_dimensions: 768
     max_history: 20
     # PostgreSQL settings (only used if store_type is "postgres")
     postgres:
-      connection_string: "postgresql://localhost:5432/postgres"
+      connection_string: "postgresql://username:password@localhost:5432/langgraph_db"
+      # For pgvector support, ensure the database has the pgvector extension
+      # CREATE EXTENSION IF NOT EXISTS vector;
     # Legacy settings for simple memory
     max_messages: 20
     message_expiry_minutes: 60
     max_sessions: 1000
+
+# Vision configuration
+vision:
+  provider: "groq"
+  config:
+    model_name: "meta-llama/llama-4-scout-17b-16e-instruct"
+
+# Embedding configuration
+embedding:
+  provider: "sentence_transformer"
+  config:
+    model: "all-mpnet-base-v2"
+    device: "cpu"
+    normalize_embeddings: true
+    batch_size: 32

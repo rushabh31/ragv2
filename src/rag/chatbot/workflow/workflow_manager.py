@@ -34,9 +34,8 @@ class WorkflowManager:
         # Initialize cache
         self.cache_manager = CacheManager(self.config.get("cache", {}))
         
-        # Initialize memory using singleton
-        from src.rag.chatbot.memory.memory_singleton import memory_singleton
-        self._memory = None  # Will be initialized lazily
+        # Memory will be initialized lazily using the same singleton pattern as service
+        self._memory = None
         
         # Create workflow graph
         self._workflow = create_rag_workflow()
@@ -56,10 +55,12 @@ class WorkflowManager:
         Returns:
             List of conversation messages
         """
-        # Get memory instance
+        # Get memory instance using the same singleton pattern as service
         if self._memory is None:
-            from src.rag.chatbot.memory.memory_singleton import memory_singleton
-            self._memory = await memory_singleton.get_memory()
+            # Import here to avoid circular imports
+            from examples.rag.chatbot.api.service import ChatbotService
+            service = ChatbotService()
+            self._memory = await service._get_memory_instance()
         
         # Get history from memory
         history = await self._memory.get_history(session_id)
@@ -118,6 +119,10 @@ class WorkflowManager:
             if workflow_params:
                 for key, value in workflow_params.items():
                     initial_state[key] = value
+                
+                # Extract SOEID from metadata if available
+                if "metadata" in workflow_params and "soeid" in workflow_params["metadata"]:
+                    initial_state["soeid"] = workflow_params["metadata"]["soeid"]
             
             # Store active run
             self._active_runs[run_id] = {
@@ -148,17 +153,26 @@ class WorkflowManager:
             if "error" not in result:
                 # Ensure memory is initialized
                 if self._memory is None:
-                    from src.rag.chatbot.memory.memory_singleton import memory_singleton
-                    self._memory = await memory_singleton.get_memory()
+                    # Import here to avoid circular imports
+                    from examples.rag.chatbot.api.service import ChatbotService
+                    service = ChatbotService()
+                    self._memory = await service._get_memory_instance()
+                
+                # Prepare metadata for memory storage
+                memory_metadata = {
+                    "workflow_run_id": run_id,
+                    "processing_time": duration
+                }
+                
+                # Include original metadata (which should contain SOEID)
+                if workflow_params and "metadata" in workflow_params:
+                    memory_metadata.update(workflow_params["metadata"])
                 
                 await self._memory.add(
                     session_id=session_id,
                     query=query,
                     response=response,
-                    metadata={
-                        "workflow_run_id": run_id,
-                        "processing_time": duration
-                    }
+                    metadata=memory_metadata
                 )
             
             # Prepare response

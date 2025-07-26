@@ -49,6 +49,11 @@ class CustomReranker(BaseReranker):
                    f"keyword={self.keyword_weight}, tfidf={self.tfidf_weight}, "
                    f"length={self.length_weight}, position={self.position_weight}")
     
+    async def _rerank_documents(self, query: str, documents: List[Document], config: Dict[str, Any]) -> List[Document]:
+        """Implement the abstract method from BaseReranker."""
+        top_k = config.get("top_k", self.top_k) if config else self.top_k
+        return await self.rerank(query, documents, top_k)
+    
     async def rerank(self, query: str, documents: List[Document], top_k: Optional[int] = None) -> List[Document]:
         """
         Rerank documents using custom text-based similarity metrics.

@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 # Registry of available generators
 GENERATOR_REGISTRY: Dict[str, Type[BaseGenerator]] = {
     "vertex": VertexGenerator,
+    "vertex_ai": VertexGenerator,  # Support both vertex and vertex_ai
     "anthropic_vertex": AnthropicVertexGenerator,
     "openai": OpenAIGenerator,
     "azure_openai": AzureOpenAIGenerator,

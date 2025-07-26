@@ -7,6 +7,7 @@ from src.rag.chatbot.memory.base_memory import BaseMemory
 from src.rag.chatbot.memory.simple_memory import SimpleMemory
 from src.rag.chatbot.memory.mem0_memory import Mem0Memory
 from src.rag.chatbot.memory.langgraph_memory import LangGraphMemory
+from src.rag.chatbot.memory.langgraph_checkpoint_memory import LangGraphCheckpointMemory
 from src.rag.core.exceptions.exceptions import MemoryError
 
 logger = logging.getLogger(__name__)
@@ -17,7 +18,8 @@ class MemoryFactory:
     _MEMORY_TYPES = {
         "simple": SimpleMemory,
         "mem0": Mem0Memory,
-        "langgraph": LangGraphMemory
+        "langgraph": LangGraphMemory,
+        "langgraph_checkpoint": LangGraphCheckpointMemory
     }
     
     @classmethod

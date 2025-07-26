@@ -118,3 +118,30 @@ class SessionHistoryWithSOEIDResponse(BaseModel):
     soeid: str
     messages: List[ChatMessage]
     metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class SessionListForSOEIDResponse(BaseModel):
+    """Response model for listing sessions for a specific SOEID."""
+    soeid: str
+    sessions: List[Dict[str, Any]]  # Session metadata
+    total_sessions: int
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ThreadListResponse(BaseModel):
+    """Response model for listing all threads (sessions)."""
+    threads: List[Dict[str, Any]]  # Thread metadata
+    total_threads: int
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class MemoryStatsResponse(BaseModel):
+    """Response model for memory statistics."""
+    memory_type: str
+    store_type: str
+    total_sessions: int
+    total_messages: int
+    unique_soeids: int
+    oldest_session: Optional[datetime] = None
+    newest_session: Optional[datetime] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
