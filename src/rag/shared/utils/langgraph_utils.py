@@ -42,6 +42,10 @@ class RAGWorkflowState(TypedDict, total=False):
     soeid: str  # Source of Entity ID for user identification
     messages: List[Message]
     
+    # Chat history configuration
+    use_chat_history: bool
+    chat_history_days: int
+    
     # Processing fields
     retrieved_documents: List[RetrievedDocument]
     reranked_documents: List[RetrievedDocument]
@@ -241,6 +245,8 @@ async def generate_node(state: RAGWorkflowState) -> RAGWorkflowState:
         session_id = state.get("session_id", "default")
         query = state.get("query", "")
         soeid = state.get("soeid")  # Get SOEID from state if available
+        use_chat_history = state.get("use_chat_history", False)
+        chat_history_days = state.get("chat_history_days", 7)
         
         try:
             # Use the singleton memory instance to avoid creating multiple instances
@@ -250,29 +256,49 @@ async def generate_node(state: RAGWorkflowState) -> RAGWorkflowState:
             service = ChatbotService()
             memory = await service._get_memory_instance()
             
-            # Get relevant conversation history - prefer user history by SOEID if available
-            if soeid:
-                conversation_history = await memory.get_user_relevant_history_by_soeid(
+            conversation_history = []
+            
+            # If chat history is enabled and we have a SOEID, get date-filtered history
+            if use_chat_history and soeid:
+                logger.info(f"Getting chat history for SOEID {soeid} within {chat_history_days} days")
+                chat_history = await memory.get_chat_history_by_soeid_and_date(
                     soeid=soeid,
-                    query=query,
-                    limit=10  # Limit to last 10 interactions
+                    days=chat_history_days,
+                    limit=20  # Limit to last 20 interactions across all sessions
                 )
-            else:
-                conversation_history = await memory.get_relevant_history(
-                    session_id=session_id,
-                    query=query,
-                    limit=10  # Limit to last 10 interactions
-                )
+                
+                # Convert chat history to conversation format
+                for msg in chat_history:
+                    conversation_history.append({
+                        "role": msg.get("role", "user"),
+                        "content": msg.get("content", ""),
+                        "session_id": msg.get("session_id", ""),
+                        "timestamp": msg.get("timestamp", "")
+                    })
+                
+                logger.info(f"Retrieved {len(conversation_history)} messages from chat history")
             
-            # Convert to the format expected by the generator
-            history_messages = []
-            for msg in conversation_history:
-                history_messages.append({
-                    "role": msg.get("role", "user"),
-                    "content": msg.get("content", "")
-                })
-            
-            conversation_history = history_messages
+            # If no chat history or SOEID, fall back to session-based history
+            if not conversation_history:
+                if soeid:
+                    session_history = await memory.get_user_relevant_history_by_soeid(
+                        soeid=soeid,
+                        query=query,
+                        limit=10  # Limit to last 10 interactions
+                    )
+                else:
+                    session_history = await memory.get_relevant_history(
+                        session_id=session_id,
+                        query=query,
+                        limit=10  # Limit to last 10 interactions
+                    )
+                
+                # Convert to the format expected by the generator
+                for msg in session_history:
+                    conversation_history.append({
+                        "role": msg.get("role", "user"),
+                        "content": msg.get("content", "")
+                    })
             
         except Exception as e:
             logger.warning(f"Failed to get conversation history from memory: {str(e)}")

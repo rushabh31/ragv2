@@ -130,6 +130,8 @@ class ChatbotService:
                          session_id: Optional[str] = None,
                          use_retrieval: bool = True,
                          use_history: bool = True,
+                         use_chat_history: bool = False,
+                         chat_history_days: int = 7,
                          metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Process a chat query and generate a response.
         
@@ -139,6 +141,8 @@ class ChatbotService:
             session_id: Optional session identifier
             use_retrieval: Whether to use document retrieval
             use_history: Whether to use conversation history
+            use_chat_history: Whether to include chat history from other sessions by SOEID
+            chat_history_days: Number of days of chat history to include (1-365)
             metadata: Additional metadata for the query
             
         Returns:
@@ -152,6 +156,8 @@ class ChatbotService:
             workflow_params = {
                 "use_retrieval": use_retrieval,
                 "use_history": use_history,
+                "use_chat_history": use_chat_history,
+                "chat_history_days": chat_history_days,
                 "metadata": metadata or {}
             }
             

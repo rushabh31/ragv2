@@ -4,7 +4,7 @@ import logging
 import asyncio
 import uuid
 from typing import Dict, Any, List, Optional, Union
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Import LangGraph checkpoint components
 try:
@@ -894,6 +894,64 @@ class LangGraphCheckpointMemory(BaseMemory):
             return [item.value for item in items]
         except Exception as e:
             logger.error(f"Failed to search long-term memory: {str(e)}", exc_info=True)
+            return []
+    
+    async def get_chat_history_by_soeid_and_date(self, 
+                                               soeid: str, 
+                                               days: int = 7, 
+                                               limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Get chat history for a SOEID within the specified number of days.
+        
+        Args:
+            soeid: Source of Entity ID for the user
+            days: Number of days to look back (default: 7)
+            limit: Maximum number of messages to return
+            
+        Returns:
+            List of chat messages from the specified date range
+        """
+        try:
+            # Calculate the cutoff date
+            cutoff_date = datetime.now() - timedelta(days=days)
+            
+            # Get all history for the SOEID
+            all_history = await self.get_user_history_by_soeid(soeid)
+            
+            # Filter messages by date
+            filtered_messages = []
+            for message in all_history:
+                timestamp_str = message.get("timestamp")
+                if timestamp_str:
+                    try:
+                        # Parse timestamp (handle both ISO format and other formats)
+                        if timestamp_str.endswith('Z'):
+                            timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                        else:
+                            timestamp = datetime.fromisoformat(timestamp_str)
+                        
+                        # Only include messages within the date range
+                        if timestamp >= cutoff_date:
+                            filtered_messages.append(message)
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"Failed to parse timestamp {timestamp_str}: {str(e)}")
+                        # Include message if we can't parse timestamp (better to include than exclude)
+                        filtered_messages.append(message)
+                else:
+                    # Include messages without timestamps (better to include than exclude)
+                    filtered_messages.append(message)
+            
+            # Sort by timestamp (newest first)
+            filtered_messages.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+            
+            # Apply limit if specified
+            if limit and len(filtered_messages) > limit:
+                filtered_messages = filtered_messages[:limit]
+            
+            logger.debug(f"Retrieved {len(filtered_messages)} messages for SOEID {soeid} within {days} days")
+            return filtered_messages
+            
+        except Exception as e:
+            logger.error(f"Failed to get chat history by SOEID and date: {str(e)}", exc_info=True)
             return []
     
     def cleanup(self):

@@ -35,6 +35,8 @@ async def send_message(
     session_id: Optional[str] = Form(None),
     use_retrieval: bool = Form(True),
     use_history: bool = Form(True),
+    use_chat_history: bool = Form(False),
+    chat_history_days: int = Form(7),
     metadata_json: Optional[str] = Form(None),
     soeid: str = Header(...),
     service: ChatbotService = Depends(get_chatbot_service)
@@ -60,6 +62,8 @@ async def send_message(
             session_id=session_id,
             use_retrieval=use_retrieval,
             use_history=use_history,
+            use_chat_history=use_chat_history,
+            chat_history_days=chat_history_days,
             metadata=metadata
         )
         
@@ -98,6 +102,8 @@ async def send_message_json(
             session_id=request.session_id,
             use_retrieval=request.use_retrieval,
             use_history=request.use_history,
+            use_chat_history=request.use_chat_history,
+            chat_history_days=request.chat_history_days,
             metadata=metadata
         )
         
