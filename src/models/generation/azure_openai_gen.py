@@ -188,6 +188,81 @@ class AzureOpenAIGenAI:
     async def validate_authentication(self) -> bool:
         """Validate authentication by testing token acquisition."""
         return await self._auth_manager.validate_authentication()
+    
+    async def generate_response(self,
+                              query: str,
+                              documents: Optional[List[Dict[str, Any]]] = None,
+                              conversation_history: Optional[List[Dict[str, str]]] = None,
+                              temperature: Optional[float] = None,
+                              max_tokens: Optional[int] = None,
+                              **kwargs) -> str:
+        """
+        Generate a response for RAG use case with documents and conversation history.
+        
+        Args:
+            query: User query string
+            documents: List of relevant documents with 'content' field
+            conversation_history: Optional conversation history with 'role' and 'content' fields
+            temperature: Temperature for generation (uses config default if None)
+            max_tokens: Maximum tokens to generate (uses config default if None)
+            **kwargs: Additional parameters
+            
+        Returns:
+            Generated response string
+        """
+        try:
+            # Build context from documents
+            context = ""
+            if documents:
+                context = "\n\nContext:\n"
+                for i, doc in enumerate(documents, 1):
+                    content = doc.get('content', str(doc)) if isinstance(doc, dict) else str(doc)
+                    context += f"Document {i}:\n{content}\n\n"
+            
+            # Build conversation history
+            history_text = ""
+            if conversation_history:
+                history_text = "\n\nPrevious conversation:\n"
+                for msg in conversation_history:
+                    role = msg.get('role', 'user')
+                    content = msg.get('content', '')
+                    history_text += f"{role}: {content}\n"
+            
+            # Create the full prompt
+            full_prompt = f"""
+{context}{history_text}
+Question: {query}
+
+Instructions:
+1. Answer the question based on the provided context and conversation history.
+2. If the context doesn't contain enough information, say "I don't have enough information to answer that question."
+3. Provide specific references to the context when possible.
+4. Be concise and accurate.
+
+Answer:
+"""
+            
+            # Use provided values or fall back to instance defaults from config
+            effective_temperature = temperature if temperature is not None else self.temperature
+            effective_max_tokens = max_tokens if max_tokens is not None else self.max_tokens
+            
+            # Create messages for Azure OpenAI API
+            messages = [{"role": "user", "content": full_prompt}]
+            
+            # Generate response using Azure OpenAI API
+            response = await self.generate_content(
+                messages=messages,
+                temperature=effective_temperature,
+                max_tokens=effective_max_tokens,
+                **kwargs
+            )
+            
+            logger.info(f"Generated RAG response using {self.model_name}")
+            return response.choices[0].message.content if response.choices else ""
+            
+        except Exception as e:
+            logger.error(f"RAG response generation failed: {str(e)}")
+            raise
 
 
 # Example usage

@@ -72,39 +72,90 @@ class GroqGenAI:
             return None
     
     async def validate_authentication(self) -> bool:
-        """Validate Groq authentication.
+        """Validate authentication by testing token acquisition.
         
         Returns:
             True if authentication is valid, False otherwise
         """
         try:
-            if not self.api_key:
-                logger.error("Groq API key not available")
-                return False
-            
-            # Test API call to validate authentication
-            async with httpx.AsyncClient() as client:
-                headers = {
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json"
-                }
-                
-                response = await client.get(
-                    f"{self.api_base}/models",
-                    headers=headers,
-                    timeout=10.0
-                )
-                
-                if response.status_code == 200:
-                    logger.info("Groq authentication validated successfully")
-                    return True
-                else:
-                    logger.error(f"Groq authentication failed: {response.status_code}")
-                    return False
-                    
+            # Test authentication by making a simple API call
+            test_response = await self.generate_content("test")
+            return bool(test_response)
         except Exception as e:
-            logger.error(f"Groq authentication validation error: {str(e)}")
+            logger.error(f"Authentication validation failed: {str(e)}")
             return False
+    
+    async def generate_response(self,
+                              query: str,
+                              documents: Optional[List[Dict[str, Any]]] = None,
+                              conversation_history: Optional[List[Dict[str, str]]] = None,
+                              temperature: Optional[float] = None,
+                              max_tokens: Optional[int] = None,
+                              **kwargs) -> str:
+        """
+        Generate a response for RAG use case with documents and conversation history.
+        
+        Args:
+            query: User query string
+            documents: List of relevant documents with 'content' field
+            conversation_history: Optional conversation history with 'role' and 'content' fields
+            temperature: Temperature for generation (uses config default if None)
+            max_tokens: Maximum tokens to generate (uses config default if None)
+            **kwargs: Additional parameters
+            
+        Returns:
+            Generated response string
+        """
+        try:
+            # Build context from documents
+            context = ""
+            if documents:
+                context = "\n\nContext:\n"
+                for i, doc in enumerate(documents, 1):
+                    content = doc.get('content', str(doc)) if isinstance(doc, dict) else str(doc)
+                    context += f"Document {i}:\n{content}\n\n"
+            
+            # Build conversation history
+            history_text = ""
+            if conversation_history:
+                history_text = "\n\nPrevious conversation:\n"
+                for msg in conversation_history:
+                    role = msg.get('role', 'user')
+                    content = msg.get('content', '')
+                    history_text += f"{role}: {content}\n"
+            
+            # Create the full prompt
+            full_prompt = f"""
+{context}{history_text}
+Question: {query}
+
+Instructions:
+1. Answer the question based on the provided context and conversation history.
+2. If the context doesn't contain enough information, say "I don't have enough information to answer that question."
+3. Provide specific references to the context when possible.
+4. Be concise and accurate.
+
+Answer:
+"""
+            
+            # Use provided values or fall back to instance defaults from config
+            effective_temperature = temperature if temperature is not None else self.temperature
+            effective_max_tokens = max_tokens if max_tokens is not None else self.max_tokens
+            
+            # Generate response using the full prompt
+            response = await self.generate_content(
+                prompt=full_prompt,
+                temperature=effective_temperature,
+                max_tokens=effective_max_tokens,
+                **kwargs
+            )
+            
+            logger.info(f"Generated RAG response using {self.model_name}")
+            return response
+            
+        except Exception as e:
+            logger.error(f"RAG response generation failed: {str(e)}")
+            raise
     
     def get_auth_health_status(self) -> Dict[str, Any]:
         """Get authentication health status.

@@ -103,20 +103,20 @@ class VertexGenAI:
                 raise
     
     async def generate_content(self,
-                             prompt: str,
-                             temperature: float = 0.7,
-                             max_output_tokens: int = 2048,
-                             top_p: float = 1.0,
-                             top_k: int = 40,
-                             **kwargs) -> Any:
+                         prompt: str,
+                         temperature: Optional[float] = None,
+                         max_output_tokens: Optional[int] = None,
+                         top_p: Optional[float] = None,
+                         top_k: Optional[int] = None,
+                         **kwargs) -> Any:
         """
         Generate content using Vertex AI.
         
         Args:
             prompt: Text prompt for generation
-            temperature: Temperature for generation
-            max_output_tokens: Maximum tokens to generate
-            top_p: Top-p sampling parameter
+            temperature: Temperature for generation (uses config default if None)
+            max_output_tokens: Maximum tokens to generate (uses config default if None)
+            top_p: Top-p sampling parameter (uses config default if None)
             top_k: Top-k sampling parameter
             **kwargs: Additional parameters
             
@@ -126,12 +126,17 @@ class VertexGenAI:
         await self._init_model()
         
         try:
+            # Use provided values or fall back to instance defaults from config
+            effective_temperature = temperature if temperature is not None else self.temperature
+            effective_max_tokens = max_output_tokens if max_output_tokens is not None else self.max_output_tokens
+            effective_top_p = top_p if top_p is not None else self.top_p
+            
             # Set generation config
             generation_config = {
-                "temperature": temperature,
-                "max_output_tokens": max_output_tokens,
-                "top_p": top_p,
-                "top_k": top_k,
+                "temperature": effective_temperature,
+                "max_output_tokens": effective_max_tokens,
+                "top_p": effective_top_p,
+                "top_k": top_k or 40,
                 **kwargs
             }
             
@@ -151,30 +156,64 @@ class VertexGenAI:
             raise
     
     async def chat_completion(self,
-                            prompt: str,
-                            temperature: float = 0.7,
-                            max_output_tokens: int = 2048,
-                            **kwargs) -> str:
+                        messages: Optional[List[Dict[str, Any]]] = None,
+                        prompt: Optional[str] = None,
+                        temperature: Optional[float] = None,
+                        max_output_tokens: Optional[int] = None,
+                        **kwargs) -> str:
         """
-        Simple chat completion interface.
+        Chat completion interface with message history support.
         
         Args:
-            prompt: User prompt
-            temperature: Temperature for generation
-            max_output_tokens: Maximum tokens to generate
+            messages: List of message dictionaries with 'role' and 'parts' keys
+            prompt: Simple prompt string (alternative to messages)
+            temperature: Temperature for generation (uses config default if None)
+            max_output_tokens: Maximum tokens to generate (uses config default if None)
             **kwargs: Additional parameters
             
         Returns:
             Generated text response
         """
-        response = await self.generate_content(
-            prompt=prompt,
-            temperature=temperature,
-            max_output_tokens=max_output_tokens,
-            **kwargs
-        )
+        await self._init_model()
         
-        return response.text if hasattr(response, 'text') else str(response)
+        try:
+            # Use provided values or fall back to instance defaults from config
+            effective_temperature = temperature if temperature is not None else self.temperature
+            effective_max_tokens = max_output_tokens if max_output_tokens is not None else self.max_output_tokens
+            
+            # Set generation config
+            generation_config = {
+                "temperature": effective_temperature,
+                "max_output_tokens": effective_max_tokens,
+                "top_p": self.top_p,
+                **kwargs
+            }
+            
+            if messages:
+                # Use chat with message history
+                response = await asyncio.to_thread(
+                    self._model.generate_content,
+                    messages,
+                    generation_config=generation_config,
+                    metadata=self.metadata,
+                )
+            elif prompt:
+                # Use simple prompt
+                response = await asyncio.to_thread(
+                    self._model.generate_content,
+                    prompt,
+                    generation_config=generation_config,
+                    metadata=self.metadata,
+                )
+            else:
+                raise ValueError("Either 'messages' or 'prompt' must be provided")
+            
+            logger.info(f"Generated chat completion using {self.model_name}")
+            return response.text if hasattr(response, 'text') else str(response)
+            
+        except Exception as e:
+            logger.error(f"Chat completion failed: {str(e)}")
+            raise
     
     def get_auth_health_status(self) -> Dict[str, Any]:
         """Get health status of the authentication system."""
@@ -183,6 +222,88 @@ class VertexGenAI:
     async def validate_authentication(self) -> bool:
         """Validate authentication by testing token acquisition."""
         return await self._auth_manager.validate_authentication()
+    
+    async def generate_response(self,
+                              query: str,
+                              documents: Optional[List[Dict[str, Any]]] = None,
+                              conversation_history: Optional[List[Dict[str, str]]] = None,
+                              temperature: Optional[float] = None,
+                              max_output_tokens: Optional[int] = None,
+                              **kwargs) -> str:
+        """
+        Generate a response for RAG use case with documents and conversation history.
+        
+        Args:
+            query: User query string
+            documents: List of relevant documents with 'content' field
+            conversation_history: Optional conversation history with 'role' and 'content' fields
+            temperature: Temperature for generation (uses config default if None)
+            max_output_tokens: Maximum tokens to generate (uses config default if None)
+            **kwargs: Additional parameters
+            
+        Returns:
+            Generated response string
+        """
+        await self._init_model()
+        
+        try:
+            # Build context from documents
+            context = ""
+            if documents:
+                context = "\n\nContext:\n"
+                for i, doc in enumerate(documents, 1):
+                    content = doc.get('content', str(doc)) if isinstance(doc, dict) else str(doc)
+                    context += f"Document {i}:\n{content}\n\n"
+            
+            # Build conversation history
+            history_text = ""
+            if conversation_history:
+                history_text = "\n\nPrevious conversation:\n"
+                for msg in conversation_history:
+                    role = msg.get('role', 'user')
+                    content = msg.get('content', '')
+                    history_text += f"{role}: {content}\n"
+            
+            # Create the full prompt
+            full_prompt = f"""
+{context}{history_text}
+Question: {query}
+
+Instructions:
+1. Answer the question based on the provided context and conversation history.
+2. If the context doesn't contain enough information, say "I don't have enough information to answer that question."
+3. Provide specific references to the context when possible.
+4. Be concise and accurate.
+
+Answer:
+"""
+            
+            # Use provided values or fall back to instance defaults from config
+            effective_temperature = temperature if temperature is not None else self.temperature
+            effective_max_tokens = max_output_tokens if max_output_tokens is not None else self.max_output_tokens
+            
+            # Set generation config
+            generation_config = {
+                "temperature": effective_temperature,
+                "max_output_tokens": effective_max_tokens,
+                "top_p": self.top_p,
+                **kwargs
+            }
+            
+            # Generate response
+            response = await asyncio.to_thread(
+                self._model.generate_content,
+                full_prompt,
+                generation_config=generation_config,
+                metadata=self.metadata,
+            )
+            
+            logger.info(f"Generated RAG response using {self.model_name}")
+            return response.text if hasattr(response, 'text') else str(response)
+            
+        except Exception as e:
+            logger.error(f"RAG response generation failed: {str(e)}")
+            raise
 
 
 # Example usage
