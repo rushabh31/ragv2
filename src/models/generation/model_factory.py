@@ -14,6 +14,7 @@ from .openai_gen import OpenAIGenAI
 from .vertex_gen import VertexGenAI
 from .azure_openai_gen import AzureOpenAIGenAI
 from .groq_gen import GroqGenAI
+from src.rag.shared.utils.config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
 
@@ -53,15 +54,15 @@ class GenerationModelFactory:
     
     @classmethod
     def create_model(cls,
-                    provider: Union[str, GenerationProvider],
+                    provider: Optional[Union[str, GenerationProvider]] = None,
                     model_name: Optional[str] = None,
                     **kwargs) -> Union[AnthropicVertexGenAI, OpenAIGenAI, VertexGenAI, AzureOpenAIGenAI]:
         """
         Create a generation model for the specified provider.
         
         Args:
-            provider: Provider name or enum
-            model_name: Optional model name (uses default if not provided)
+            provider: Provider name or enum (optional, reads from config if not provided)
+            model_name: Optional model name (reads from config if not provided)
             **kwargs: Additional arguments for model initialization
             
         Returns:
@@ -70,6 +71,14 @@ class GenerationModelFactory:
         Raises:
             ValueError: If provider is not supported
         """
+        # Get configuration from ConfigManager
+        config_manager = ConfigManager()
+        generation_config = config_manager.get_section("generation", {})
+        
+        # Use provider from config if not provided
+        if provider is None:
+            provider = generation_config.get("provider", "vertex")
+        
         # Convert string to enum if needed
         if isinstance(provider, str):
             try:
@@ -83,16 +92,21 @@ class GenerationModelFactory:
         if not model_class:
             raise ValueError(f"No model class registered for provider: {provider}")
         
-        # Use default model name if not provided
+        # Use model name from config if not provided
         if model_name is None:
-            model_name = cls._default_models[provider]
+            model_config = generation_config.get("config", {})
+            model_name = model_config.get("model_name") or cls._default_models[provider]
+        
+        # Merge config parameters with kwargs
+        model_config = generation_config.get("config", {})
+        final_kwargs = {**model_config, **kwargs}
         
         # Create and return model instance
         try:
-            logger.info(f"Creating {provider.value} model: {model_name}")
-            return model_class(model_name=model_name, **kwargs)
+            logger.info(f"Creating {provider.value} generation model: {model_name} with config from YAML")
+            return model_class(model_name=model_name, **final_kwargs)
         except Exception as e:
-            logger.error(f"Failed to create {provider.value} model: {str(e)}")
+            logger.error(f"Failed to create {provider.value} generation model: {str(e)}")
             raise
     
     @classmethod

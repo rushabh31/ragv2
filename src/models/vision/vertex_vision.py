@@ -5,11 +5,13 @@ This module provides a standardized interface for Vertex AI vision models
 using the universal authentication system.
 """
 
+import asyncio
 import base64
 import logging
+import os
 from typing import Dict, Any, Optional, List
 import vertexai
-from vertexai.generative_models import GenerativeModel, Part
+from vertexai.generative_models import GenerativeModel, Content, Part, Image
 
 from src.utils.auth_manager import UniversalAuthManager
 
@@ -35,12 +37,13 @@ class VertexVisionAI:
             **kwargs: Additional configuration parameters
         """
         self.model_name = model_name
-        self.project_id = project_id
+        self.project_id = project_id or os.environ.get("PROJECT_ID")
         self.location = location
         self.config = kwargs
         
         # Initialize universal auth manager
-        self.auth_manager = UniversalAuthManager()
+        self.auth_manager = UniversalAuthManager(f"vertex_vision_{model_name}")
+        self.auth_manager.configure()
         
         # Model will be initialized lazily
         self._model = None
@@ -48,25 +51,25 @@ class VertexVisionAI:
         
         logger.info(f"Initialized VertexVisionAI with model: {model_name}")
     
-    def get_coin_token(self) -> Optional[str]:
+    async def get_coin_token(self) -> Optional[str]:
         """Get authentication token using universal auth manager.
         
         Returns:
             Authentication token or None if unavailable
         """
         try:
-            return self.auth_manager.get_token("vertex_ai")
+            return await self.auth_manager.get_token("vertex_ai")
         except Exception as e:
             logger.error(f"Failed to get authentication token: {str(e)}")
             return None
     
-    def get_auth_health_status(self) -> Dict[str, Any]:
+    async def get_auth_health_status(self) -> Dict[str, Any]:
         """Get authentication health status.
         
         Returns:
             Dictionary containing health status information
         """
-        token = self.get_coin_token()
+        token = await self.get_coin_token()
         return {
             "service": "vertex_ai_vision",
             "model_name": self.model_name,
@@ -81,7 +84,7 @@ class VertexVisionAI:
             True if authentication is valid, False otherwise
         """
         try:
-            token = self.get_coin_token()
+            token = await self.get_coin_token()
             if not token:
                 logger.error("Vertex AI token not available")
                 return False
@@ -100,17 +103,28 @@ class VertexVisionAI:
             return
         
         try:
-            # Get project ID from auth manager if not provided
+            # Ensure we have a project ID
             if not self.project_id:
-                self.project_id = self._auth_manager.get_project_id()
+                raise ValueError("Project ID is required. Set PROJECT_ID environment variable or pass project_id parameter.")
+            
+            # Set SSL certificate path if provided
+            ssl_cert_path = os.environ.get("SSL_CERT_FILE")
+            if ssl_cert_path:
+                os.environ["SSL_CERT_FILE"] = ssl_cert_path
+                logger.info(f"Using SSL certificate from: {ssl_cert_path}")
             
             # Initialize Vertex AI with authenticated credentials
-            credentials = self._auth_manager.get_credentials()
+            credentials = await self.auth_manager.get_credentials()
             vertexai.init(
                 project=self.project_id,
                 location=self.location,
+                api_transport="rest",  # uses UAT PROJECT
+                api_endpoint=os.environ.get("VERTEXAI_API_ENDPOINT"),  # uses R2D2 UAT
                 credentials=credentials
             )
+            
+            # Set metadata for user tracking
+            self.metadata = [("x-r2d2-user", os.getenv("USERNAME", ""))]
             
             # Initialize the generative model
             self._model = GenerativeModel(self.model_name)
@@ -144,21 +158,41 @@ class VertexVisionAI:
         try:
             await self._ensure_initialized()
             
-            # Create image part from base64 data
-            image_part = Part.from_data(
-                data=base64.b64decode(base64_encoded),
-                mime_type="image/png"
-            )
+            # Create content with text and optional image
+            parts = []
+            if prompt:
+                parts.append(Part.from_text(prompt))
             
-            # Generate content with image and prompt
-            response = await self._model.generate_content_async(
-                [prompt, image_part],
-                generation_config={
-                    "temperature": kwargs.get("temperature", 0.1),
-                    "top_p": kwargs.get("top_p", 0.8),
-                    "top_k": kwargs.get("top_k", 40),
-                    "max_output_tokens": kwargs.get("max_output_tokens", 8192)
-                }
+            # Add image if provided
+            if base64_encoded:
+                # Determine mime type based on image format (default to PNG)
+                mime_type = kwargs.get("mime_type", "image/png")
+                parts.append(Part.from_data(
+                    data=base64.b64decode(base64_encoded),
+                    mime_type=mime_type
+                ))
+            
+            # Create contents list with user role
+            contents = [Content(role="user", parts=parts)]
+            
+            # Set default generation config if not provided
+            generation_config = {
+                "temperature": kwargs.get("temperature", 0.7),
+                "max_output_tokens": kwargs.get("max_output_tokens", 2048),
+                "top_p": kwargs.get("top_p", 1.0),
+                "top_k": kwargs.get("top_k", 40)
+            }
+            
+            # Make the API call with timeout
+            timeout = kwargs.get("timeout", 60)  # Default 60 second timeout
+            response = await asyncio.wait_for(
+                asyncio.to_thread(
+                    lambda: self._model.generate_content(
+                        contents,
+                        generation_config=generation_config
+                    )
+                ),
+                timeout=timeout
             )
             
             # Extract text from response

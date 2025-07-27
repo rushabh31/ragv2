@@ -13,6 +13,7 @@ from .vertex_embedding import VertexEmbeddingAI
 from .openai_embedding import OpenAIEmbeddingAI
 from .azure_openai_embedding import AzureOpenAIEmbeddingAI
 from .sentence_transformer_embedding import SentenceTransformerEmbeddingAI
+from src.rag.shared.utils.config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
 
@@ -49,15 +50,15 @@ class EmbeddingModelFactory:
     
     @classmethod
     def create_model(cls,
-                    provider: Union[str, EmbeddingProvider],
+                    provider: Optional[Union[str, EmbeddingProvider]] = None,
                     model_name: Optional[str] = None,
                     **kwargs) -> Union[VertexEmbeddingAI, OpenAIEmbeddingAI, AzureOpenAIEmbeddingAI, SentenceTransformerEmbeddingAI]:
         """
         Create an embedding model for the specified provider.
         
         Args:
-            provider: Provider name or enum
-            model_name: Optional model name (uses default if not provided)
+            provider: Provider name or enum (optional, reads from config if not provided)
+            model_name: Optional model name (reads from config if not provided)
             **kwargs: Additional arguments for model initialization
             
         Returns:
@@ -66,6 +67,14 @@ class EmbeddingModelFactory:
         Raises:
             ValueError: If provider is not supported
         """
+        # Get configuration from ConfigManager
+        config_manager = ConfigManager()
+        embedding_config = config_manager.get_section("embedding", {})
+        
+        # Use provider from config if not provided
+        if provider is None:
+            provider = embedding_config.get("provider", "vertex_ai")
+        
         # Convert string to enum if needed
         if isinstance(provider, str):
             try:
@@ -79,14 +88,19 @@ class EmbeddingModelFactory:
         if not model_class:
             raise ValueError(f"No model class registered for provider: {provider}")
         
-        # Use default model name if not provided
+        # Use model name from config if not provided
         if model_name is None:
-            model_name = cls._default_models[provider]
+            model_config = embedding_config.get("config", {})
+            model_name = model_config.get("model") or cls._default_models[provider]
+        
+        # Merge config parameters with kwargs
+        model_config = embedding_config.get("config", {})
+        final_kwargs = {**model_config, **kwargs}
         
         # Create and return model instance
         try:
-            logger.info(f"Creating {provider.value} embedding model: {model_name}")
-            return model_class(model_name=model_name, **kwargs)
+            logger.info(f"Creating {provider.value} embedding model: {model_name} with config from YAML")
+            return model_class(model_name=model_name, **final_kwargs)
         except Exception as e:
             logger.error(f"Failed to create {provider.value} embedding model: {str(e)}")
             raise

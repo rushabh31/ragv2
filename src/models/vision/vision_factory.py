@@ -11,6 +11,7 @@ from typing import Dict, Any, Optional, Union, List
 
 from .vertex_vision import VertexVisionAI
 from .groq_vision import GroqVisionAI
+from src.rag.shared.utils.config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
 
@@ -42,15 +43,15 @@ class VisionModelFactory:
     @classmethod
     def create_model(
         cls,
-        provider: Union[str, VisionProvider],
+        provider: Optional[Union[str, VisionProvider]] = None,
         model_name: Optional[str] = None,
         **kwargs
     ) -> Union[VertexVisionAI]:
         """Create a vision model instance.
         
         Args:
-            provider: Vision provider name or enum
-            model_name: Optional model name (uses default if not provided)
+            provider: Vision provider name or enum (optional, reads from config if not provided)
+            model_name: Optional model name (reads from config if not provided)
             **kwargs: Additional model configuration parameters
             
         Returns:
@@ -60,6 +61,14 @@ class VisionModelFactory:
             ValueError: If provider is not supported
             Exception: If model creation fails
         """
+        # Get configuration from ConfigManager
+        config_manager = ConfigManager()
+        vision_config = config_manager.get_section("vision", {})
+        
+        # Use provider from config if not provided
+        if provider is None:
+            provider = vision_config.get("provider", "vertex_ai")
+        
         # Convert string provider to enum
         if isinstance(provider, str):
             try:
@@ -76,14 +85,19 @@ class VisionModelFactory:
         # Get model class
         model_class = cls._model_registry[provider_enum]
         
-        # Use default model name if not provided
+        # Use model name from config if not provided
         if model_name is None:
-            model_name = cls._default_models[provider_enum]
+            model_config = vision_config.get("config", {})
+            model_name = model_config.get("model") or cls._default_models[provider_enum]
+        
+        # Merge config parameters with kwargs
+        model_config = vision_config.get("config", {})
+        final_kwargs = {**model_config, **kwargs}
         
         try:
             # Create and return model instance
-            logger.info(f"Creating {provider_enum.value} vision model: {model_name}")
-            return model_class(model_name=model_name, **kwargs)
+            logger.info(f"Creating {provider_enum.value} vision model: {model_name} with config from YAML")
+            return model_class(model_name=model_name, **final_kwargs)
         except Exception as e:
             logger.error(f"Failed to create {provider_enum.value} vision model: {str(e)}")
             raise
