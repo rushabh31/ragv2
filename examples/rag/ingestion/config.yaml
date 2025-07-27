@@ -1,34 +1,66 @@
 # RAG Ingestion Configuration
-# Based on code analysis - all parameters verified from source code
+# Fixed structure to match actual code implementation
 
-# Document Processing Configuration
-document_processing:
-  chunk_size: 1000              # Size of text chunks (FixedSizeChunker)
-  chunk_overlap: 200            # Overlap between chunks
-  max_chunks_per_document: 100  # Maximum chunks per document
-
-# Parser Configuration
-parser:
-  provider: "vision_parser"     # Options: "vision_parser", "groq_vision_parser", "openai_vision", "simple_text"
+# Vision model configuration (used by VisionParser via factory)
+# VisionParser reads from system-level "vision" config via ConfigManager
+vision:
+  provider: vertex_ai                   # Options: vertex_ai, groq
   config:
-    model: "gemini-1.5-pro-002"        # Vertex AI vision model
-    max_pages: 100                      # Maximum pages to process
-    max_concurrent_pages: 5             # Parallel processing pages
+    model: gemini-1.5-pro-002          # Vision model name
+    region: us-central1                 # GCP region for Vertex AI
+    # project_id loaded from environment variable PROJECT_ID
 
-# Generation Configuration (for semantic chunking and LLM tasks)
+# Generation model configuration (used by SemanticChunker via factory)
+# SemanticChunker reads from system-level "generation" config via ConfigManager
 generation:
-  provider: "vertex"            # Options: "vertex", "anthropic_vertex", "openai", "azure_openai"
+  provider: vertex                      # Options: vertex, anthropic_vertex, openai, azure_openai
   config:
-    model_name: "gemini-1.5-pro-002"   # Model name
+    model_name: gemini-2.5-pro     # Generation model name
     temperature: 0.1                    # Generation temperature
     max_tokens: 2048                    # Maximum tokens
+    top_p: 0.95                         # Top-p sampling parameter
 
-# Embedding Configuration
+# Embedding model configuration (used by VertexEmbedder via factory)
+# VertexEmbedder reads from system-level "embedding" config via ConfigManager
 embedding:
-  provider: "vertex"            # Options: "vertex", "vertex_ai", "openai", "openai_universal", "azure_openai"
+  provider: vertex_ai                   # Options: vertex_ai, vertex, openai_universal, openai, azure_openai
   config:
-    model: "text-embedding-004"         # Embedding model
+    model: text-embedding-005           # Embedding model name (768 dimensions)
     batch_size: 100                     # Batch size for API calls
+
+# Ingestion pipeline configuration
+ingestion:
+  # Parser configuration
+  parser:
+    provider: vision_parser             # Options: vision_parser, simple_text, groq_vision_parser, openai_vision
+    config:
+      # VisionParser-specific settings (model comes from vision.config above)
+      max_pages: 100                    # Maximum pages to process per document
+      max_concurrent_pages: 5           # Number of pages to process in parallel
+  
+  # Chunking configuration
+  chunking:
+    strategy: page_based                # Options: fixed_size, page_based, semantic
+    
+    # Fixed Size Chunker parameters
+    chunk_size: 1000                    # Target size of each chunk in characters
+    chunk_overlap: 200                  # Overlap between chunks in characters
+    
+    # Page Based Chunker parameters
+    min_chunk_size: 100                 # Minimum size of a chunk in characters
+    use_headers_fallback: true          # Use headers as fallback if no page numbers found
+    
+    # Semantic Chunker parameters
+    max_chunk_size: 1500                # Maximum size of each chunk in characters
+    min_chunk_size_semantic: 300        # Minimum size for semantic chunks
+    use_llm_boundary: false             # Whether to use LLM to determine optimal chunk boundaries
+  
+  # Processing configuration
+  processing:
+    max_concurrent_documents: 5         # Maximum concurrent document processing
+    retry_attempts: 3                   # Number of retry attempts
+    retry_delay_seconds: 1              # Delay between retries
+    max_chunks_per_document: 100        # Maximum chunks per document
 
 # Vector Store Configuration
 vector_store:
