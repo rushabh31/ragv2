@@ -13,6 +13,7 @@ from vertexai.language_models import TextEmbeddingModel
 import vertexai
 
 from src.utils import UniversalAuthManager
+from src.rag.shared.utils.config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
 
@@ -26,28 +27,42 @@ class VertexEmbeddingAI:
     """
     
     def __init__(self, 
-                 model_name: str = "text-embedding-004",
+                 model_name: Optional[str] = None,
                  project_id: Optional[str] = None,
-                 location: str = "us-central1"):
+                 location: Optional[str] = None,
+                 batch_size: Optional[int] = None,
+                 **kwargs):
         """
         Initialize Vertex AI embedding client.
         
         Args:
-            model_name: Name of the Vertex AI embedding model to use
-            project_id: GCP project ID (will use env var if not provided)
-            location: GCP location for Vertex AI
+            model_name: Name of the Vertex AI embedding model to use (overrides config)
+            project_id: GCP project ID (overrides env var)
+            location: GCP location for Vertex AI (overrides config)
+            batch_size: Batch size for embedding requests (overrides config)
+            **kwargs: Additional configuration parameters
         """
-        self.model_name = model_name
+        # Load configuration from ConfigManager
+        config_manager = ConfigManager()
+        embedding_config = config_manager.get_section("embedding", {})
+        
+        # Use provided values or fall back to config, then to defaults
+        self.model_name = model_name or embedding_config.get("model", "text-embedding-004")
         self.project_id = project_id or os.environ.get("PROJECT_ID")
-        self.location = location
+        self.location = location or embedding_config.get("location", "us-central1")
+        self.batch_size = batch_size or embedding_config.get("batch_size", 100)
+        
+        # Store additional config parameters
+        self.config = {**embedding_config, **kwargs}
+        
         self._model = None
-        self._auth_manager = UniversalAuthManager(f"vertex_embedding_{model_name}")
+        self._auth_manager = UniversalAuthManager(f"vertex_embedding_{self.model_name}")
         self._auth_manager.configure()
         
         # Set metadata for user tracking
         self.metadata = [("x-r2d2-user", os.getenv("USERNAME", ""))]
         
-        logger.info(f"Initialized VertexEmbeddingAI with model: {model_name}")
+        logger.info(f"Initialized VertexEmbeddingAI with model: {self.model_name} (from config)")
     
     def get_coin_token(self) -> Optional[str]:
         """Get authentication token using universal auth manager."""
@@ -86,7 +101,7 @@ class VertexEmbeddingAI:
     
     async def get_embeddings(self,
                            texts: Union[str, List[str]],
-                           batch_size: int = 100,
+                           batch_size: Optional[int] = None,
                            **kwargs) -> List[List[float]]:
         """
         Get embeddings for one or more text strings.
@@ -106,11 +121,14 @@ class VertexEmbeddingAI:
             if isinstance(texts, str):
                 texts = [texts]
             
+            # Use provided batch_size or fall back to instance default
+            effective_batch_size = batch_size or self.batch_size
+            
             all_embeddings = []
             
             # Process in batches to avoid API limits
-            for i in range(0, len(texts), batch_size):
-                batch = texts[i:i + batch_size]
+            for i in range(0, len(texts), effective_batch_size):
+                batch = texts[i:i + effective_batch_size]
                 
                 # Get embeddings for the batch
                 embeddings = await asyncio.to_thread(

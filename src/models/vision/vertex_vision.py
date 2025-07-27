@@ -14,6 +14,7 @@ import vertexai
 from vertexai.generative_models import GenerativeModel, Content, Part, Image
 
 from src.utils.auth_manager import UniversalAuthManager
+from src.rag.shared.utils.config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
 
@@ -23,33 +24,46 @@ class VertexVisionAI:
     
     def __init__(
         self,
-        model_name: str = "gemini-1.5-pro-002",
+        model_name: Optional[str] = None,
         project_id: Optional[str] = None,
-        location: str = "us-central1",
+        location: Optional[str] = None,
+        max_pages: Optional[int] = None,
+        max_concurrent_pages: Optional[int] = None,
         **kwargs
     ):
         """Initialize the Vertex AI Vision model.
         
         Args:
-            model_name: Name of the vision model to use
-            project_id: GCP project ID (will be retrieved from auth manager if not provided)
-            location: GCP location for the model
+            model_name: Name of the vision model to use (overrides config)
+            project_id: GCP project ID (overrides env var)
+            location: GCP location for the model (overrides config)
+            max_pages: Maximum pages to process (overrides config)
+            max_concurrent_pages: Max concurrent pages (overrides config)
             **kwargs: Additional configuration parameters
         """
-        self.model_name = model_name
+        # Load configuration from ConfigManager
+        config_manager = ConfigManager()
+        vision_config = config_manager.get_section("vision", {})
+        
+        # Use provided values or fall back to config, then to defaults
+        self.model_name = model_name or vision_config.get("model", "gemini-1.5-pro-002")
         self.project_id = project_id or os.environ.get("PROJECT_ID")
-        self.location = location
-        self.config = kwargs
+        self.location = location or vision_config.get("location", "us-central1")
+        self.max_pages = max_pages or vision_config.get("max_pages", 100)
+        self.max_concurrent_pages = max_concurrent_pages or vision_config.get("max_concurrent_pages", 5)
+        
+        # Store additional config parameters
+        self.config = {**vision_config, **kwargs}
         
         # Initialize universal auth manager
-        self.auth_manager = UniversalAuthManager(f"vertex_vision_{model_name}")
+        self.auth_manager = UniversalAuthManager(f"vertex_vision_{self.model_name}")
         self.auth_manager.configure()
         
         # Model will be initialized lazily
         self._model = None
         self._initialized = False
         
-        logger.info(f"Initialized VertexVisionAI with model: {model_name}")
+        logger.info(f"Initialized VertexVisionAI with model: {self.model_name} (from config)")
     
     async def get_coin_token(self) -> Optional[str]:
         """Get authentication token using universal auth manager.

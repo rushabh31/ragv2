@@ -13,6 +13,7 @@ from vertexai.generative_models import GenerativeModel
 import vertexai
 
 from src.utils import UniversalAuthManager
+from src.rag.shared.utils.config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
 
@@ -26,25 +27,45 @@ class VertexGenAI:
     """
     
     def __init__(self, 
-                 model_name: str = "gemini-1.5-pro-002",
+                 model_name: Optional[str] = None,
                  project_id: Optional[str] = None,
-                 location: str = "us-central1"):
+                 location: Optional[str] = None,
+                 temperature: Optional[float] = None,
+                 max_output_tokens: Optional[int] = None,
+                 top_p: Optional[float] = None,
+                 **kwargs):
         """
         Initialize Vertex AI client.
         
         Args:
-            model_name: Name of the Vertex AI model to use
-            project_id: GCP project ID (will use env var if not provided)
-            location: GCP location for Vertex AI
+            model_name: Name of the Vertex AI model to use (overrides config)
+            project_id: GCP project ID (overrides env var)
+            location: GCP location for Vertex AI (overrides config)
+            temperature: Temperature for generation (overrides config)
+            max_output_tokens: Max output tokens (overrides config)
+            top_p: Top-p for generation (overrides config)
+            **kwargs: Additional configuration parameters
         """
-        self.model_name = model_name
+        # Load configuration from ConfigManager
+        config_manager = ConfigManager()
+        generation_config = config_manager.get_section("generation", {})
+        
+        # Use provided values or fall back to config, then to defaults
+        self.model_name = model_name or generation_config.get("model", "gemini-1.5-pro-002")
         self.project_id = project_id or os.environ.get("PROJECT_ID")
-        self.location = location
+        self.location = location or generation_config.get("location", "us-central1")
+        self.temperature = temperature or generation_config.get("temperature", 0.2)
+        self.max_output_tokens = max_output_tokens or generation_config.get("max_output_tokens", 1024)
+        self.top_p = top_p or generation_config.get("top_p", 0.95)
+        
+        # Store additional config parameters
+        self.config = {**generation_config, **kwargs}
+        
         self._model = None
-        self._auth_manager = UniversalAuthManager(f"vertex_gen_{model_name}")
+        self._auth_manager = UniversalAuthManager(f"vertex_gen_{self.model_name}")
         self._auth_manager.configure()
         
-        logger.info(f"Initialized VertexGenAI with model: {model_name}")
+        logger.info(f"Initialized VertexGenAI with model: {self.model_name} (from config)")
     
     def get_coin_token(self) -> Optional[str]:
         """Get authentication token using universal auth manager."""
