@@ -12,6 +12,7 @@ from typing import Dict, Any, List, Optional, Union
 from openai import OpenAI
 
 from src.utils import UniversalAuthManager
+from src.rag.shared.utils.config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
 
@@ -25,22 +26,36 @@ class OpenAIEmbeddingAI:
     """
     
     def __init__(self, 
-                 model_name: str = "all-mpnet-base-v2",
-                 base_url: Optional[str] = None):
+                 model_name: Optional[str] = None,
+                 base_url: Optional[str] = None,
+                 batch_size: Optional[int] = None,
+                 **kwargs):
         """
         Initialize OpenAI embedding client.
         
         Args:
-            model_name: Name of the OpenAI embedding model to use
-            base_url: Custom base URL for OpenAI API
+            model_name: Name of the OpenAI embedding model to use (overrides config)
+            base_url: Custom base URL for OpenAI API (overrides config)
+            batch_size: Batch size for embedding requests (overrides config)
+            **kwargs: Additional configuration parameters
         """
-        self.model_name = model_name
-        self.base_url = base_url
+        # Load configuration from ConfigManager
+        config_manager = ConfigManager()
+        embedding_config = config_manager.get_section("embedding", {})
+        
+        # Use provided values or fall back to config, then to defaults
+        self.model_name = model_name or embedding_config.get("model", "all-mpnet-base-v2")
+        self.base_url = base_url or embedding_config.get("base_url")
+        self.batch_size = batch_size or embedding_config.get("batch_size", 100)
+        
+        # Store additional config parameters
+        self.config = {**embedding_config, **kwargs}
+        
         self._client = None
-        self._auth_manager = UniversalAuthManager(f"openai_embedding_{model_name}")
+        self._auth_manager = UniversalAuthManager(f"openai_embedding_{self.model_name}")
         self._auth_manager.configure()
         
-        logger.info(f"Initialized OpenAIEmbeddingAI with model: {model_name}")
+        logger.info(f"Initialized OpenAIEmbeddingAI with model: {self.model_name} (from config)")
     
     def get_coin_token(self) -> Optional[str]:
         """Get authentication token using universal auth manager."""

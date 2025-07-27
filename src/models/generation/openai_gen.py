@@ -12,6 +12,7 @@ from typing import Dict, Any, List, Optional, Union
 from openai import OpenAI
 
 from src.utils import UniversalAuthManager
+from src.rag.shared.utils.config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
 
@@ -25,22 +26,42 @@ class OpenAIGenAI:
     """
     
     def __init__(self, 
-                 model_name: str = "Meta-Llama-3-70B-Instruct",
-                 base_url: Optional[str] = None):
+                 model_name: Optional[str] = None,
+                 base_url: Optional[str] = None,
+                 temperature: Optional[float] = None,
+                 max_tokens: Optional[int] = None,
+                 top_p: Optional[float] = None,
+                 **kwargs):
         """
         Initialize OpenAI client.
         
         Args:
-            model_name: Name of the OpenAI model to use
-            base_url: Custom base URL for OpenAI API
+            model_name: Name of the OpenAI model to use (overrides config)
+            base_url: Custom base URL for OpenAI API (overrides config)
+            temperature: Temperature for generation (overrides config)
+            max_tokens: Max tokens for generation (overrides config)
+            top_p: Top-p for generation (overrides config)
+            **kwargs: Additional configuration parameters
         """
-        self.model_name = model_name
-        self.base_url = base_url
+        # Load configuration from ConfigManager
+        config_manager = ConfigManager()
+        generation_config = config_manager.get_section("generation", {})
+        
+        # Use provided values or fall back to config, then to defaults
+        self.model_name = model_name or generation_config.get("model", "Meta-Llama-3-70B-Instruct")
+        self.base_url = base_url or generation_config.get("base_url")
+        self.temperature = temperature or generation_config.get("temperature", 0.2)
+        self.max_tokens = max_tokens or generation_config.get("max_tokens", 1024)
+        self.top_p = top_p or generation_config.get("top_p", 0.95)
+        
+        # Store additional config parameters
+        self.config = {**generation_config, **kwargs}
+        
         self._client = None
-        self._auth_manager = UniversalAuthManager(f"openai_{model_name}")
+        self._auth_manager = UniversalAuthManager(f"openai_{self.model_name}")
         self._auth_manager.configure()
         
-        logger.info(f"Initialized OpenAIGenAI with model: {model_name}")
+        logger.info(f"Initialized OpenAIGenAI with model: {self.model_name} (from config)")
     
     def get_coin_token(self) -> Optional[str]:
         """Get authentication token using universal auth manager."""

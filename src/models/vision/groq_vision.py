@@ -5,29 +5,53 @@ This module provides a Groq-based vision model that integrates with the universa
 authentication system and supports vision processing capabilities.
 """
 
+import asyncio
 import logging
 import os
-import base64
-from typing import Dict, Any, Optional
-import httpx
-from src.utils.auth_manager import UniversalAuthManager
+from typing import Dict, Any, List, Optional
+from groq import Groq
+
+from src.utils import UniversalAuthManager
+from src.rag.shared.utils.config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
 
 class GroqVisionAI:
     """Groq Vision AI model with universal authentication."""
     
-    def __init__(self, model_name: str = "llama-3.2-11b-vision-preview", **kwargs):
+    def __init__(self, 
+                 model_name: Optional[str] = None,
+                 temperature: Optional[float] = None,
+                 max_tokens: Optional[int] = None,
+                 top_p: Optional[float] = None,
+                 max_pages: Optional[int] = None,
+                 max_concurrent_pages: Optional[int] = None,
+                 **kwargs):
         """Initialize Groq Vision AI model.
         
         Args:
-            model_name: Name of the Groq vision model to use
+            model_name: Name of the Groq vision model to use (overrides config)
+            temperature: Temperature for generation (overrides config)
+            max_tokens: Max tokens for generation (overrides config)
+            top_p: Top-p for generation (overrides config)
+            max_pages: Maximum pages to process (overrides config)
+            max_concurrent_pages: Max concurrent pages (overrides config)
             **kwargs: Additional configuration parameters
         """
-        self.model_name = model_name
-        self.temperature = kwargs.get("temperature", 0.2)
-        self.max_tokens = kwargs.get("max_tokens", 1024)
-        self.top_p = kwargs.get("top_p", 0.95)
+        # Load configuration from ConfigManager
+        config_manager = ConfigManager()
+        vision_config = config_manager.get_section("vision", {})
+        
+        # Use provided values or fall back to config, then to defaults
+        self.model_name = model_name or vision_config.get("model", "llama-3.2-11b-vision-preview")
+        self.temperature = temperature or vision_config.get("temperature", 0.2)
+        self.max_tokens = max_tokens or vision_config.get("max_tokens", 1024)
+        self.top_p = top_p or vision_config.get("top_p", 0.95)
+        self.max_pages = max_pages or vision_config.get("max_pages", 100)
+        self.max_concurrent_pages = max_concurrent_pages or vision_config.get("max_concurrent_pages", 5)
+        
+        # Store additional config parameters
+        self.config = {**vision_config, **kwargs}
         
         # Initialize universal auth manager
         self.auth_manager = UniversalAuthManager()
@@ -39,7 +63,7 @@ class GroqVisionAI:
         if not self.api_key:
             logger.warning("GROQ_API_KEY not found in environment variables")
         
-        logger.info(f"Initialized GroqVisionAI with model: {self.model_name}")
+        logger.info(f"Initialized GroqVisionAI with model: {self.model_name} (from config)")
     
     def get_coin_token(self) -> Optional[str]:
         """Get authentication token using universal auth manager.

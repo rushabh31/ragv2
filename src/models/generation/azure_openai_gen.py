@@ -8,10 +8,13 @@ using the universal authentication system.
 import asyncio
 import logging
 import os
-from typing import Dict, Any, List, Optional, Union
+from typing import Dict, Any, List, Optional
 from openai import AzureOpenAI
+from azure.identity import DefaultAzureCredential
+from azure.core.credentials import AccessToken
 
 from src.utils import UniversalAuthManager
+from src.rag.shared.utils.config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
 
@@ -25,25 +28,45 @@ class AzureOpenAIGenAI:
     """
     
     def __init__(self, 
-                 model_name: str = "GPT4-o",
+                 model_name: Optional[str] = None,
                  azure_endpoint: Optional[str] = None,
-                 api_version: str = "2023-05-15"):
+                 api_version: Optional[str] = None,
+                 temperature: Optional[float] = None,
+                 max_tokens: Optional[int] = None,
+                 top_p: Optional[float] = None,
+                 **kwargs):
         """
         Initialize Azure OpenAI client.
         
         Args:
-            model_name: Name of the Azure OpenAI model to use
-            azure_endpoint: Azure OpenAI endpoint URL
-            api_version: API version to use
+            model_name: Name of the Azure OpenAI model to use (overrides config)
+            azure_endpoint: Azure OpenAI endpoint URL (overrides config)
+            api_version: API version to use (overrides config)
+            temperature: Temperature for generation (overrides config)
+            max_tokens: Max tokens for generation (overrides config)
+            top_p: Top-p for generation (overrides config)
+            **kwargs: Additional configuration parameters
         """
-        self.model_name = model_name
-        self.azure_endpoint = azure_endpoint
-        self.api_version = api_version
+        # Load configuration from ConfigManager
+        config_manager = ConfigManager()
+        generation_config = config_manager.get_section("generation", {})
+        
+        # Use provided values or fall back to config, then to defaults
+        self.model_name = model_name or generation_config.get("model", "GPT4-o")
+        self.azure_endpoint = azure_endpoint or generation_config.get("azure_endpoint")
+        self.api_version = api_version or generation_config.get("api_version", "2023-05-15")
+        self.temperature = temperature or generation_config.get("temperature", 0.2)
+        self.max_tokens = max_tokens or generation_config.get("max_tokens", 1024)
+        self.top_p = top_p or generation_config.get("top_p", 0.95)
+        
+        # Store additional config parameters
+        self.config = {**generation_config, **kwargs}
+        
         self._client = None
-        self._auth_manager = UniversalAuthManager(f"azure_openai_{model_name}")
+        self._auth_manager = UniversalAuthManager(f"azure_openai_{self.model_name}")
         self._auth_manager.configure()
         
-        logger.info(f"Initialized AzureOpenAIGenAI with model: {model_name}")
+        logger.info(f"Initialized AzureOpenAIGenAI with model: {self.model_name} (from config)")
     
     def get_coin_token(self) -> Optional[str]:
         """Get authentication token using universal auth manager."""

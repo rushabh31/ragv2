@@ -5,28 +5,47 @@ This module provides a local sentence transformer-based embedding model that int
 with the universal authentication system and supports batch embedding operations.
 """
 
+import asyncio
 import logging
 import os
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 import numpy as np
-from src.utils.auth_manager import UniversalAuthManager
+from sentence_transformers import SentenceTransformer
+from src.utils import UniversalAuthManager
+from src.rag.shared.utils.config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
 
 class SentenceTransformerEmbeddingAI:
     """Sentence Transformer Embedding model with universal authentication."""
     
-    def __init__(self, model_name: str = "all-mpnet-base-v2", **kwargs):
+    def __init__(self, 
+                 model_name: Optional[str] = None,
+                 batch_size: Optional[int] = None,
+                 device: Optional[str] = None,
+                 normalize_embeddings: Optional[bool] = None,
+                 **kwargs):
         """Initialize Sentence Transformer Embedding model.
         
         Args:
-            model_name: Name of the sentence transformer model to use
+            model_name: Name of the sentence transformer model to use (overrides config)
+            batch_size: Batch size for embedding requests (overrides config)
+            device: Device to use for computation (overrides config)
+            normalize_embeddings: Whether to normalize embeddings (overrides config)
             **kwargs: Additional configuration parameters
         """
-        self.model_name = model_name
-        self.batch_size = kwargs.get("batch_size", 32)
-        self.device = kwargs.get("device", "cpu")
-        self.normalize_embeddings = kwargs.get("normalize_embeddings", True)
+        # Load configuration from ConfigManager
+        config_manager = ConfigManager()
+        embedding_config = config_manager.get_section("embedding", {})
+        
+        # Use provided values or fall back to config, then to defaults
+        self.model_name = model_name or embedding_config.get("model", "all-mpnet-base-v2")
+        self.batch_size = batch_size or embedding_config.get("batch_size", 32)
+        self.device = device or embedding_config.get("device", "cpu")
+        self.normalize_embeddings = normalize_embeddings if normalize_embeddings is not None else embedding_config.get("normalize_embeddings", True)
+        
+        # Store additional config parameters
+        self.config = {**embedding_config, **kwargs}
         
         # Initialize universal auth manager
         self.auth_manager = UniversalAuthManager()
@@ -34,7 +53,7 @@ class SentenceTransformerEmbeddingAI:
         # Model will be loaded lazily
         self._model = None
         
-        logger.info(f"Initialized SentenceTransformerEmbeddingAI with model: {self.model_name}")
+        logger.info(f"Initialized SentenceTransformerEmbeddingAI with model: {self.model_name} (from config)")
     
     def _load_model(self):
         """Load the sentence transformer model lazily."""
