@@ -3,7 +3,11 @@ import os
 import pickle
 import json
 from typing import Dict, Any, List, Optional, Tuple
-import asyncpg
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncEngine, AsyncSession
+from sqlalchemy.ext.asyncio.session import async_sessionmaker
+from sqlalchemy import text, MetaData, Table, Column, Integer, String, DateTime, Text
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.sql import select, insert, update
 import numpy as np
 from datetime import datetime
 
@@ -24,16 +28,24 @@ class PgVectorStore(BaseVectorStore):
                 - dimension: Dimension of the embedding vectors
                 - connection_string: PostgreSQL connection string
                 - table_name: Name of the table to store vectors
+                - schema_name: PostgreSQL schema name (default: 'public')
                 - metadata_path: Optional path to save metadata backup
+                - index_method: Vector index method ('ivfflat' or 'hnsw')
         """
         super().__init__(config)
         self.dimension = self.config.get("dimension", 768)
         self.connection_string = self.config.get("connection_string")
         self.table_name = self.config.get("table_name", "document_embeddings")
+        self.schema_name = self.config.get("schema_name", "public")
         self.metadata_path = self.config.get("metadata_path")
         self.index_method = self.config.get("index_method", "ivfflat")  # ivfflat, hnsw
         
-        self.conn_pool = None
+        # Create fully qualified table name with schema
+        self.qualified_table_name = f"{self.schema_name}.{self.table_name}"
+        
+        # SQLAlchemy async engine and session factory
+        self.engine: Optional[AsyncEngine] = None
+        self.async_session_factory = None
         self.chunks = []  # Store chunk objects for retrieval
         self._initialized = False
     
@@ -46,11 +58,27 @@ class PgVectorStore(BaseVectorStore):
             return
             
         try:
-            # Create connection pool
-            self.conn_pool = await asyncpg.create_pool(
-                dsn=self.connection_string,
-                min_size=1,
-                max_size=10
+            # Convert asyncpg connection string to SQLAlchemy async format
+            if self.connection_string.startswith('postgresql://'):
+                # Convert to asyncpg format for SQLAlchemy
+                sqlalchemy_url = self.connection_string.replace('postgresql://', 'postgresql+asyncpg://')
+            else:
+                sqlalchemy_url = f"postgresql+asyncpg://{self.connection_string}"
+            
+            # Create async engine with connection pooling
+            self.engine = create_async_engine(
+                sqlalchemy_url,
+                pool_size=10,
+                max_overflow=20,
+                pool_pre_ping=True,
+                echo=False  # Set to True for SQL debugging
+            )
+            
+            # Create async session factory
+            self.async_session_factory = async_sessionmaker(
+                self.engine,
+                class_=AsyncSession,
+                expire_on_commit=False
             )
             
             # Set up database
@@ -71,14 +99,19 @@ class PgVectorStore(BaseVectorStore):
             raise VectorStoreError(error_msg) from e
     
     async def _setup_database(self) -> None:
-        """Set up the database with required extensions and tables."""
-        async with self.conn_pool.acquire() as conn:
+        """Set up the database with required extensions, schema, and tables."""
+        async with self.engine.begin() as conn:
             # Enable pgvector extension
-            await conn.execute('CREATE EXTENSION IF NOT EXISTS vector')
+            await conn.execute(text('CREATE EXTENSION IF NOT EXISTS vector'))
+            
+            # Create schema if it doesn't exist (skip for 'public' schema)
+            if self.schema_name != 'public':
+                await conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS {self.schema_name}'))
+                logger.info(f"Created schema: {self.schema_name}")
             
             # Create table if it doesn't exist
-            await conn.execute(f'''
-                CREATE TABLE IF NOT EXISTS {self.table_name} (
+            await conn.execute(text(f'''
+                CREATE TABLE IF NOT EXISTS {self.qualified_table_name} (
                     id SERIAL PRIMARY KEY,
                     chunk_id TEXT UNIQUE NOT NULL,
                     soeid TEXT,
@@ -93,34 +126,37 @@ class PgVectorStore(BaseVectorStore):
                     document_id TEXT,
                     chunk_index INTEGER
                 )
-            ''')
+            '''))
             
             # Create index based on the specified method
             if self.index_method == 'ivfflat':
                 try:
                     # Create IVFFlat index (approximate nearest neighbor)
-                    await conn.execute(f'''
+                    await conn.execute(text(f'''
                         CREATE INDEX IF NOT EXISTS {self.table_name}_embedding_idx 
-                        ON {self.table_name} 
+                        ON {self.qualified_table_name} 
                         USING ivfflat (embedding vector_cosine_ops) 
                         WITH (lists = 100)
-                    ''')
+                    '''))
                 except Exception as e:
                     logger.warning(f"Failed to create IVFFlat index: {str(e)}. This may happen if the table is empty.")
             elif self.index_method == 'hnsw':
                 try:
                     # Create HNSW index for newer PostgreSQL versions with pgvector 0.5.0+
-                    await conn.execute(f'''
+                    await conn.execute(text(f'''
                         CREATE INDEX IF NOT EXISTS {self.table_name}_embedding_hnsw_idx 
-                        ON {self.table_name} 
+                        ON {self.qualified_table_name} 
                         USING hnsw (embedding vector_cosine_ops) 
                         WITH (m = 16, ef_construction = 64)
-                    ''')
+                    '''))
                 except Exception as e:
                     logger.warning(f"Failed to create HNSW index: {str(e)}. This may require pgvector 0.5.0+ and PostgreSQL 15+.")
             
-            # Create index on chunk_id for faster lookups
-            await conn.execute(f'CREATE INDEX IF NOT EXISTS {self.table_name}_chunk_id_idx ON {self.table_name} (chunk_id)')
+            # Create additional indexes for efficient querying
+            await conn.execute(text(f'CREATE INDEX IF NOT EXISTS {self.table_name}_chunk_id_idx ON {self.qualified_table_name} (chunk_id)'))
+            await conn.execute(text(f'CREATE INDEX IF NOT EXISTS {self.table_name}_soeid_idx ON {self.qualified_table_name} (soeid)'))
+            await conn.execute(text(f'CREATE INDEX IF NOT EXISTS {self.table_name}_session_id_idx ON {self.qualified_table_name} (session_id)'))
+            await conn.execute(text(f'CREATE INDEX IF NOT EXISTS {self.table_name}_upload_timestamp_idx ON {self.qualified_table_name} (upload_timestamp)'))
             
             logger.info(f"Set up pgvector database table {self.table_name} with {self.index_method} index")
     
@@ -138,8 +174,11 @@ class PgVectorStore(BaseVectorStore):
     async def _load_chunks_from_db(self) -> None:
         """Load chunks from the database."""
         try:
-            async with self.conn_pool.acquire() as conn:
-                rows = await conn.fetch(f'SELECT chunk_id, content, metadata FROM {self.table_name}')
+            async with self.async_session_factory() as session:
+                result = await session.execute(
+                    text(f'SELECT chunk_id, content, metadata FROM {self.qualified_table_name}')
+                )
+                rows = result.fetchall()
                 
                 self.chunks = []
                 for row in rows:
@@ -217,9 +256,9 @@ class PgVectorStore(BaseVectorStore):
                     raise VectorStoreError(f"Vector dimension mismatch: got {len(embedding)}, expected {self.dimension}")
             
             # Insert chunks into database
-            async with self.conn_pool.acquire() as conn:
-                # Start transaction
-                async with conn.transaction():
+            async with self.async_session_factory() as session:
+                # Start transaction (automatically handled by session)
+                try:
                     for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
                         # Generate chunk ID if not present
                         if not hasattr(chunk, 'id') or not chunk.id:
@@ -239,26 +278,48 @@ class PgVectorStore(BaseVectorStore):
                         # Convert embedding list to string format for pgvector
                         embedding_str = '[' + ','.join(map(str, embedding)) + ']'
                         
-                        # Insert or update chunk
-                        await conn.execute(f'''
-                            INSERT INTO {self.table_name} 
-                            (chunk_id, soeid, session_id, content, metadata, embedding, 
-                             page_number, file_name, document_id, chunk_index)
-                            VALUES ($1, $2, $3, $4, $5, $6::vector, $7, $8, $9, $10)
-                            ON CONFLICT (chunk_id)
-                            DO UPDATE SET
-                                soeid = $2,
-                                session_id = $3,
-                                content = $4,
-                                metadata = $5,
-                                embedding = $6::vector,
-                                page_number = $7,
-                                file_name = $8,
-                                document_id = $9,
-                                chunk_index = $10,
-                                upload_timestamp = CURRENT_TIMESTAMP
-                        ''', chunk.id, soeid, session_id, chunk.content, metadata_json, 
-                             embedding_str, page_number, file_name, document_id, chunk_index)
+                        # Insert or update chunk using SQLAlchemy text with parameters
+                        await session.execute(
+                            text(f'''
+                                INSERT INTO {self.qualified_table_name} 
+                                (chunk_id, soeid, session_id, content, metadata, embedding, 
+                                 page_number, file_name, document_id, chunk_index)
+                                VALUES (:chunk_id, :soeid, :session_id, :content, :metadata, :embedding::vector, 
+                                        :page_number, :file_name, :document_id, :chunk_index)
+                                ON CONFLICT (chunk_id)
+                                DO UPDATE SET
+                                    soeid = :soeid,
+                                    session_id = :session_id,
+                                    content = :content,
+                                    metadata = :metadata,
+                                    embedding = :embedding::vector,
+                                    page_number = :page_number,
+                                    file_name = :file_name,
+                                    document_id = :document_id,
+                                    chunk_index = :chunk_index,
+                                    upload_timestamp = CURRENT_TIMESTAMP
+                            '''),
+                            {
+                                'chunk_id': chunk.id,
+                                'soeid': soeid,
+                                'session_id': session_id,
+                                'content': chunk.content,
+                                'metadata': metadata_json,
+                                'embedding': embedding_str,
+                                'page_number': page_number,
+                                'file_name': file_name,
+                                'document_id': document_id,
+                                'chunk_index': chunk_index
+                            }
+                        )
+                    
+                    # Commit the transaction
+                    await session.commit()
+                    
+                except Exception as e:
+                    # Rollback on error
+                    await session.rollback()
+                    raise
             
             # Add chunks to in-memory store (without embeddings to save memory)
             for chunk in chunks:
@@ -313,14 +374,21 @@ class PgVectorStore(BaseVectorStore):
             # Execute vector similarity search
             # Convert embedding list to string format for pgvector
             embedding_str = '[' + ','.join(map(str, query_embedding)) + ']'
-            async with self.conn_pool.acquire() as conn:
-                results = await conn.fetch(f'''
-                    SELECT chunk_id, content, metadata, 
-                           1 - (embedding <=> $1::vector) AS similarity
-                    FROM {self.table_name}
-                    ORDER BY similarity DESC
-                    LIMIT $2
-                ''', embedding_str, top_k)
+            async with self.async_session_factory() as session:
+                result = await session.execute(
+                    text(f'''
+                        SELECT chunk_id, content, metadata, 
+                               1 - (embedding <=> :embedding::vector) AS similarity
+                        FROM {self.qualified_table_name}
+                        ORDER BY similarity DESC
+                        LIMIT :top_k
+                    '''),
+                    {
+                        'embedding': embedding_str,
+                        'top_k': top_k
+                    }
+                )
+                results = result.fetchall()
             
             search_results = []
             for row in results:

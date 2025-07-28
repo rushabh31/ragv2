@@ -342,6 +342,48 @@ GRANT ALL PRIVILEGES ON SEQUENCES TO rag_app_user;
 
 ---
 
+## 💭 Memory System Options
+
+The RAG system supports multiple memory implementations, each designed for different use cases:
+
+### 🏪 **PostgreSQL Persistent Memory (`langgraph_checkpoint` + `postgres`)**
+**Best for: Production environments, enterprise applications**
+
+- **Persistence**: Full conversation history stored in PostgreSQL
+- **Cross-session**: Users can reference conversations from other sessions
+- **Scalability**: Handles high-volume conversations with proper indexing
+- **SOEID Support**: Full user tracking across all sessions
+- **Performance**: Optimized with indexes for fast retrieval
+- **Backup**: Standard PostgreSQL backup/restore procedures
+
+### 🧠 **In-Memory Checkpointing (`langgraph_checkpoint` + `in_memory`)**
+**Best for: Development, testing, temporary deployments**
+
+- **Persistence**: Conversation history lost on application restart
+- **Performance**: Fastest memory operations (no database I/O)
+- **Resource Usage**: Uses application memory for storage
+- **Limitations**: Not suitable for production or multi-instance deployments
+- **Use Cases**: Local development, unit testing, proof-of-concepts
+
+### 🚫 **No Checkpointing (`no_checkpoint`)**
+**Best for: Stateless APIs, privacy-sensitive applications, high-performance scenarios**
+
+- **Persistence**: No conversation history stored anywhere
+- **Privacy**: Maximum privacy - no data retention
+- **Performance**: Lowest latency and resource usage
+- **Stateless**: Each conversation is independent
+- **Use Cases**: Public APIs, privacy-compliant applications, high-volume stateless interactions
+- **Benefits**: No database requirements, infinite scalability
+
+### 📝 **Simple Memory (`simple`)**
+**Best for: Legacy compatibility, basic applications**
+
+- **Persistence**: In-memory storage with configurable history limit
+- **Limitations**: Basic functionality, no cross-session support
+- **Use Cases**: Backward compatibility, simple chatbots
+
+---
+
 ## ⚙️ Configuration Examples
 
 ### 1. Ingestion Configuration (config.yaml)
@@ -359,6 +401,7 @@ vector_store:
 
 ### 2. Chatbot Memory Configuration (config.yaml)
 
+#### Option A: PostgreSQL Persistent Memory (Recommended for Production)
 ```yaml
 chatbot:
   memory:
@@ -366,6 +409,30 @@ chatbot:
     store_type: "postgres"
     postgres:
       connection_string: "postgresql://rag_app_user:password@localhost:5432/langgraph_rag_db"
+```
+
+#### Option B: In-Memory Checkpointing (Development/Testing)
+```yaml
+chatbot:
+  memory:
+    type: "langgraph_checkpoint"
+    store_type: "in_memory"
+```
+
+#### Option C: No Checkpointing - Stateless Conversations (High Performance/Privacy)
+```yaml
+chatbot:
+  memory:
+    type: "no_checkpoint"
+    enabled: true  # Set to false to completely disable memory operations
+```
+
+#### Option D: Simple Memory (Legacy)
+```yaml
+chatbot:
+  memory:
+    type: "simple"
+    max_history: 10
 ```
 
 ### 3. Environment Variables
