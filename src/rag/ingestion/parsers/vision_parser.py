@@ -8,6 +8,8 @@ from datetime import datetime
 import json
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+import time
+from pathlib import Path
 
 from src.rag.ingestion.parsers.base_parser import BaseDocumentParser
 from src.rag.core.interfaces.base import Document
@@ -28,21 +30,39 @@ class VisionParser(BaseDocumentParser):
             config: Configuration dictionary for the parser
         """
         super().__init__(config)
-        self.model_name = self.config.get("model", "gemini-1.5-pro-002")
-        self.max_pages = self.config.get("max_pages", 100)
-        self.max_concurrent_pages = self.config.get("max_concurrent_pages", 5)
-        self.vision_model = None
         
-        # Load vision configuration from system config
+        # Load vision configuration from system config first
         config_manager = ConfigManager()
-        system_config = config_manager.get_config("vision")
+        system_config = config_manager.get_section("vision")
         if system_config:
             self.vision_provider = system_config.get("provider", "vertex_ai")
             self.vision_config = system_config.get("config", {})
+            # Read model from system vision config
+            self.model_name = self.vision_config.get("model", "gemini-1.5-pro-002")
         else:
             # Default to vertex_ai if no vision config found
             self.vision_provider = "vertex_ai"
             self.vision_config = {}
+            self.model_name = "gemini-2.5-flash"  # Default model
+        
+        # Read parser-specific settings from self.config (passed from ingestion.parser.config)
+        self.max_pages = self.config.get("max_pages", 100)
+        self.max_concurrent_pages = self.config.get("max_concurrent_pages", 5)
+        
+        # Retry configuration
+        self.max_retries = self.config.get("max_retries", 3)
+        self.retry_delay = self.config.get("retry_delay", 2.0)  # seconds
+        self.retry_backoff_multiplier = self.config.get("retry_backoff_multiplier", 1.5)
+        
+        # SSL certificate configuration
+        self.ssl_cert_path = os.environ.get("SSL_CERT_FILE", "config/certs.pem")
+        if os.path.exists(self.ssl_cert_path):
+            os.environ["SSL_CERT_FILE"] = self.ssl_cert_path
+            logger.info(f"Using SSL certificate from: {self.ssl_cert_path}")
+        else:
+            logger.warning(f"SSL certificate not found at: {self.ssl_cert_path}")
+        
+        self.vision_model = None
     
     async def _init_vision_model(self):
         """Initialize the Vision model lazily using factory."""
@@ -89,9 +109,13 @@ class VisionParser(BaseDocumentParser):
             if page_count > self.max_pages:
                 logger.warning(f"PDF has {page_count} pages, exceeding max limit of {self.max_pages}")
             
-            # Extract document metadata
+            # Extract document metadata and filename
             pdf_metadata = pdf_document.metadata
             doc_id = str(uuid.uuid4())
+            
+            # Extract filename from file path
+            filename = Path(file_path).name
+            logger.info(f"Processing file: {filename}")
             
             # Create document-level metadata
             document_metadata = DocumentMetadata(
@@ -155,7 +179,9 @@ class VisionParser(BaseDocumentParser):
                 content=combined_text,
                 metadata={
                     **document_metadata.dict(),
-                    "extraction_method": "vision_parser"
+                    "extraction_method": "vision_parser",
+                    "file_name": filename,
+                    "source_file": filename
                 }
             )
             
@@ -166,11 +192,12 @@ class VisionParser(BaseDocumentParser):
             logger.error(error_msg, exc_info=True)
             raise DocumentProcessingError(error_msg) from e
     
-    async def _extract_text_with_vision(self, base64_image: str) -> str:
-        """Extract text from an image using vision model.
+    async def _extract_text_with_vision(self, base64_image: str, page_num: int = 0) -> str:
+        """Extract text from an image using vision model with retry logic.
         
         Args:
             base64_image: Base64 encoded image
+            page_num: Page number for logging purposes
             
         Returns:
             Extracted text in markdown format
@@ -184,16 +211,47 @@ class VisionParser(BaseDocumentParser):
         Ignore any watermarks or page numbers.
         """
         
-        # Use the new vision model's parse_text_from_image function
-        response = await self.vision_model.parse_text_from_image(
-            base64_encoded=base64_image,
-            prompt=prompt
-        )
+        last_exception = None
         
-        return response
+        for attempt in range(self.max_retries + 1):
+            try:
+                if attempt > 0:
+                    delay = self.retry_delay * (self.retry_backoff_multiplier ** (attempt - 1))
+                    logger.info(f"Retrying vision extraction for page {page_num + 1}, attempt {attempt + 1}/{self.max_retries + 1} after {delay:.1f}s delay")
+                    await asyncio.sleep(delay)
+                
+                # Use the new vision model's parse_text_from_image function with timeout
+                response = await asyncio.wait_for(
+                    self.vision_model.parse_text_from_image(
+                        base64_encoded=base64_image,
+                        prompt=prompt,
+                        timeout=30  # 30 second timeout per page
+                    ),
+                    timeout=45  # Additional 45 second timeout at parser level
+                )
+                
+                if attempt > 0:
+                    logger.info(f"Vision extraction succeeded for page {page_num + 1} on attempt {attempt + 1}")
+                
+                return response
+                
+            except asyncio.TimeoutError as e:
+                last_exception = e
+                logger.warning(f"Vision model call timed out for page {page_num + 1}, attempt {attempt + 1}/{self.max_retries + 1}")
+                if attempt == self.max_retries:
+                    logger.error(f"Vision extraction failed for page {page_num + 1} after {self.max_retries + 1} attempts due to timeout")
+                    
+            except Exception as e:
+                last_exception = e
+                logger.warning(f"Vision model call failed for page {page_num + 1}, attempt {attempt + 1}/{self.max_retries + 1}: {str(e)}")
+                if attempt == self.max_retries:
+                    logger.error(f"Vision extraction failed for page {page_num + 1} after {self.max_retries + 1} attempts: {str(e)}")
+        
+        # If all retries failed, raise the last exception
+        raise Exception(f"Vision extraction failed after {self.max_retries + 1} attempts: {str(last_exception)}")
     
     async def _process_single_page(self, pdf_document, page_num: int, file_path: str, semaphore: asyncio.Semaphore) -> str:
-        """Process a single page with concurrency control.
+        """Process a single page with concurrency control and retry logic.
         
         Args:
             pdf_document: PyMuPDF document object
@@ -216,14 +274,22 @@ class VisionParser(BaseDocumentParser):
                         page_num
                     )
                 
-                # Use vision model to extract text as markdown
-                markdown_content = await self._extract_text_with_vision(base64_image)
+                # Use vision model to extract text as markdown with retry logic
+                markdown_content = await self._extract_text_with_vision(base64_image, page_num)
                 logger.info(f"Successfully processed page {page_num+1} of {file_path}")
                 return f"--- Page {page_num+1} ---\n\n{markdown_content}"
                 
             except Exception as e:
-                logger.error(f"Vision extraction failed for page {page_num+1}: {str(e)}")
-                raise e
+                logger.error(f"Vision extraction failed for page {page_num+1} after all retries: {str(e)}")
+                # Fallback to simple text extraction
+                try:
+                    page = pdf_document[page_num]
+                    fallback_text = page.get_text()
+                    logger.info(f"Using fallback text extraction for page {page_num+1}")
+                    return f"--- Page {page_num+1} (fallback extraction) ---\n\n{fallback_text}"
+                except Exception as fallback_error:
+                    logger.error(f"Fallback extraction also failed for page {page_num+1}: {str(fallback_error)}")
+                    return f"--- Page {page_num+1} (extraction failed) ---\n\n[Content could not be extracted]"
     
     def _convert_page_to_base64(self, pdf_document, page_num: int) -> str:
         """Convert a PDF page to base64 image (synchronous operation for thread pool).
@@ -241,7 +307,7 @@ class VisionParser(BaseDocumentParser):
         return base64.b64encode(img_data).decode('utf-8')
     
     async def _process_pages_sequentially(self, pdf_document, pages_to_process: int, file_path: str) -> List[str]:
-        """Fallback method to process pages sequentially.
+        """Fallback method to process pages sequentially with retry logic.
         
         Args:
             pdf_document: PyMuPDF document object
@@ -258,18 +324,19 @@ class VisionParser(BaseDocumentParser):
                 # Get page as image
                 base64_image = self._convert_page_to_base64(pdf_document, page_num)
                 
-                # Use vision model to extract text as markdown
-                markdown_content = await self._extract_text_with_vision(base64_image)
+                # Use vision model to extract text as markdown with retry logic
+                markdown_content = await self._extract_text_with_vision(base64_image, page_num)
                 all_text.append(f"--- Page {page_num+1} ---\n\n{markdown_content}")
                 logger.info(f"Successfully processed page {page_num+1} of {file_path} (sequential)")
                 
             except Exception as e:
-                logger.error(f"Vision extraction failed for page {page_num+1}: {str(e)}")
+                logger.error(f"Vision extraction failed for page {page_num+1} after all retries: {str(e)}")
                 # Fallback to regular text extraction
                 try:
                     page = pdf_document[page_num]
                     fallback_text = page.get_text()
                     all_text.append(f"--- Page {page_num+1} (fallback extraction) ---\n\n{fallback_text}")
+                    logger.info(f"Using fallback text extraction for page {page_num+1} (sequential)")
                 except Exception as fallback_error:
                     logger.error(f"Fallback extraction also failed for page {page_num+1}: {str(fallback_error)}")
                     all_text.append(f"--- Page {page_num+1} (extraction failed) ---\n\n[Content could not be extracted]")
