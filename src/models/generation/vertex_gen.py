@@ -282,13 +282,18 @@ Answer:
             effective_temperature = temperature if temperature is not None else self.temperature
             effective_max_tokens = max_output_tokens if max_output_tokens is not None else self.max_output_tokens
             
-            # Set generation config
+            # Set generation config - only include valid Vertex AI parameters
             generation_config = {
                 "temperature": effective_temperature,
                 "max_output_tokens": effective_max_tokens,
-                "top_p": self.top_p,
-                **kwargs
+                "top_p": self.top_p
             }
+            
+            # Only add valid generation config parameters from kwargs
+            valid_gen_params = ['top_k', 'candidate_count', 'stop_sequences']
+            for param in valid_gen_params:
+                if param in kwargs:
+                    generation_config[param] = kwargs[param]
             
             # Generate response
             response = await asyncio.to_thread(

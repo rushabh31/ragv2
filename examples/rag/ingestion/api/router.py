@@ -140,19 +140,31 @@ async def upload_document(
         import os, shutil
         uploads_dir = os.path.join("data", "uploads")
         os.makedirs(uploads_dir, exist_ok=True)
-        _, ext = os.path.splitext(file.filename)
+        
+        # Preserve original filename information
+        original_filename = file.filename or "unknown_file"
+        _, ext = os.path.splitext(original_filename)
         import uuid
         document_id = str(uuid.uuid4())
+        
+        # Save with UUID but preserve original filename in metadata
         file_path = os.path.join(uploads_dir, f"{document_id}{ext}")
         with open(file_path, "wb") as f:
             shutil.copyfileobj(file.file, f)
+        
+        logger.info(f"Uploaded file saved: original='{original_filename}' -> temp='{file_path}'")
 
         # Parse options if provided - robust parsing with multiple fallback strategies
         metadata = {}
         if options:
             metadata = _parse_options_robust(options)
+        
+        # Add original filename to metadata to preserve it through the pipeline
+        metadata["original_filename"] = original_filename
+        metadata["upload_filename"] = original_filename
+        logger.info(f"Added original filename to metadata: {original_filename}")
 
-        # Create job and start processing, passing the file path instead of UploadFile
+        # Create job and start processing, passing the file path and enhanced metadata
         job = await service.upload_document(file_path, soeid, metadata)
 
         return DocumentUploadResponse(

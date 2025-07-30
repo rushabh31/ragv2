@@ -6,9 +6,7 @@
 vision:
   provider: vertex_ai                   # Options: vertex_ai, groq
   config:
-    model: gemini-1.5-pro-002          # Vision model name
-    region: us-central1                 # GCP region for Vertex AI
-    # project_id loaded from environment variable PROJECT_ID
+    model: gemini-2.5-pro          # Vision model name
 
 # Generation model configuration (used by SemanticChunker via factory)
 # SemanticChunker reads from system-level "generation" config via ConfigManager
@@ -37,6 +35,11 @@ ingestion:
       # VisionParser-specific settings (model comes from vision.config above)
       max_pages: 100                    # Maximum pages to process per document
       max_concurrent_pages: 5           # Number of pages to process in parallel
+      
+      # Retry configuration for vision extraction failures
+      max_retries: 3                    # Number of retry attempts for vision extraction
+      retry_delay: 2.0                  # Initial delay between retries (seconds)
+      retry_backoff_multiplier: 1.5     # Multiplier for exponential backoff
   
   # Chunking configuration
   chunking:
@@ -64,12 +67,14 @@ ingestion:
 
 # Vector Store Configuration
 vector_store:
-  provider: "faiss"             # Options: "faiss", "pgvector", "chromadb"
+  provider: "pgvector"          # Options: "faiss", "pgvector", "chromadb"
   config:
     dimension: 768                      # Must match embedding model dimension (text-embedding-004 = 768)
-    index_type: "HNSW"                  # Options: "Flat", "HNSW", "IVF"
-    index_path: "./data/faiss_index.bin"
-    metadata_path: "./data/faiss_metadata.pkl"
+    connection_string: "postgresql://rushabhsmacbook@localhost:5432/rag_vector_db"
+    table_name: "document_embeddings"
+    schema_name: "public"               # PostgreSQL schema name (default: 'public')
+    index_method: "hnsw"                # Options: "ivfflat", "hnsw"
+    metadata_path: "./data/pgvector_metadata.pkl"
 
 # API Configuration
 api:

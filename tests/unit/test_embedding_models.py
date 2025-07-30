@@ -173,26 +173,19 @@ async def test_rag_integration():
     print("="*50)
     
     try:
-        from src.rag.ingestion.embedders.embedder_factory import EmbedderFactory
+        from src.models.embedding.embedding_factory import EmbeddingModelFactory
         
-        # Test available embedders
-        available_embedders = EmbedderFactory.get_available_embedders()
-        print(f"Available RAG embedders: {list(available_embedders.keys())}")
+        # Test available embedding models
+        available_providers = ["vertex_ai", "openai", "azure_openai"]
+        print(f"Available embedding providers: {available_providers}")
         
-        # Test creating new universal auth embedders
-        new_embedders = ["vertex_ai", "openai_universal", "azure_openai"]
-        
-        for embedder_name in new_embedders:
+        # Test creating embedding models directly
+        for provider in available_providers:
             try:
-                print(f"\\nTesting RAG {embedder_name} embedder...")
-                config = {
-                    "provider": embedder_name,
-                    "model": "default",
-                    "batch_size": 10
-                }
+                print(f"\nTesting {provider} embedding model...")
                 
-                embedder = await EmbedderFactory.create_embedder(config)
-                print(f"RAG {embedder_name} embedder created: ✓")
+                embedder = EmbeddingModelFactory.create_model(provider)
+                print(f"{provider} embedding model created: ✓")
                 
                 # Test health status if available
                 if hasattr(embedder, 'get_auth_health_status'):
@@ -200,7 +193,7 @@ async def test_rag_integration():
                     print(f"Auth health: {health.get('status', 'unknown')}")
                 
             except Exception as e:
-                print(f"Failed to create RAG {embedder_name} embedder: {str(e)}")
+                print(f"Failed to create {provider} embedding model: {str(e)}")
         
         return True
         

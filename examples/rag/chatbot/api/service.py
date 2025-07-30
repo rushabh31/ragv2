@@ -9,7 +9,7 @@ from src.rag.core.exceptions.exceptions import GenerationError, RetrievalError, 
 from src.rag.chatbot.retrievers.vector_retriever import VectorRetriever
 from src.rag.chatbot.rerankers.cross_encoder_reranker import CrossEncoderReranker
 from src.rag.chatbot.rerankers.custom_reranker import CustomReranker
-from src.rag.chatbot.generators.generator_factory import GeneratorFactory
+from src.models.generation.model_factory import GenerationModelFactory
 
 from src.rag.chatbot.workflow.workflow_manager import WorkflowManager
 from src.rag.shared.models.schema import FullDocument, ChatMessage, ChatSession
@@ -90,9 +90,8 @@ class ChatbotService:
                 self._reranker = CrossEncoderReranker(reranker_config)
         
         if self._generator is None:
-            generator_config = self.config_manager.get_section("chatbot.generation", {})
-            # Use the factory to create the appropriate generator
-            self._generator = await GeneratorFactory.create_generator(generator_config)
+            # Use factory to create generator - it will automatically read config from YAML
+            self._generator = GenerationModelFactory.create_model()
         
         if self._memory is None:
             # Use the singleton memory instance

@@ -1,0 +1,309 @@
+##############################################
+# RAG System Comprehensive Configuration File
+# Generated from thorough code analysis of all ingestion pipeline modules
+##############################################
+
+# System-wide settings
+system:
+  log_level: INFO                    # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  request_id_header: X-Request-ID    # Header name for request tracking
+  environment: development           # Options: development, staging, production
+
+# Security settings
+security:
+  api_keys:
+    - name: default
+      key: "${API_KEY}"
+      roles:
+        - user
+    - name: admin
+      key: "${ADMIN_API_KEY}"
+      roles:
+        - user
+        - admin
+  rate_limiting:
+    enabled: true                    # Enable/disable rate limiting
+    provider: local                  # Options: local, redis
+    requests: 100                    # Number of requests allowed
+    period_seconds: 60               # Time window in seconds
+    redis_url: "redis://localhost:6379/0"  # Redis URL if using redis provider
+
+# Cache settings
+cache:
+  enabled: true                      # Enable/disable caching
+  provider: local                    # Options: local, redis
+  default_ttl_seconds: 3600          # Default time-to-live for cache entries
+  max_size: 10000                    # Maximum number of cached items
+  cleanup_interval_seconds: 300      # Cache cleanup interval
+
+# Vision model configuration (used by VisionParser)
+vision:
+  provider: vertex_ai                # Options: vertex_ai, groq
+  config:
+    model: gemini-1.5-pro-002        # Vision model name
+    region: us-central1              # GCP region for Vertex AI
+    # project_id loaded from environment variable PROJECT_ID
+
+# Generation model configuration (used by SemanticChunker and other LLM tasks)
+generation:
+  provider: vertex                   # Options: vertex, anthropic_vertex, openai, azure_openai
+  config:
+    model_name: gemini-1.5-pro-002   # Generation model name
+    temperature: 0.1                 # Generation temperature (0.0-1.0)
+    max_tokens: 2048                 # Maximum output tokens
+    top_p: 0.95                      # Top-p sampling parameter
+    # project_id loaded from environment variable PROJECT_ID
+
+# Embedding model configuration (used by all embedders)
+embedding:
+  provider: vertex_ai                # Options: vertex_ai, vertex, openai_universal, openai, azure_openai
+  config:
+    model: text-embedding-004        # Embedding model name
+    batch_size: 100                  # Batch size for API calls
+    # project_id loaded from environment variable PROJECT_ID
+
+# Ingestion API settings
+ingestion:
+  port: 8000                         # API server port
+  host: 0.0.0.0                      # API server host
+  workers: 4                         # Number of worker processes
+  reload: false                      # Enable auto-reload for development
+  
+  # Parser configuration
+  parsers:
+    default_parser: vision_parser    # Default parser to use
+    
+    # Vision Parser (Vertex AI Gemini Vision) - PRIMARY PARSER
+    vision_parser:
+      enabled: true                  # Enable/disable this parser
+      model: gemini-1.5-pro-002      # Vision model name
+      max_pages: 100                 # Maximum pages to process per document
+      max_concurrent_pages: 5        # Number of pages to process in parallel
+      # Uses vision.provider and vision.config from above
+    
+    # Simple Text Parser
+    simple_text:
+      enabled: true                  # Enable/disable this parser
+      supported_extensions:          # File extensions this parser handles
+        - .txt
+        - .md
+        - .text
+    
+    # Groq Vision Parser (if using Groq)
+    groq_vision_parser:
+      enabled: false                 # Enable/disable this parser
+      model: llama-3.2-11b-vision-preview  # Groq vision model
+      prompt_template: "Extract and structure the text content from this document."
+      max_pages: 50                  # Maximum pages to process
+      max_concurrent_pages: 5        # Parallel processing pages
+      # Requires GROQ_API_KEY environment variable
+    
+    # OpenAI Vision Parser (if using OpenAI)
+    openai_vision:
+      enabled: false                 # Enable/disable this parser
+      model: gpt-4o                  # OpenAI vision model
+      api_key: "${OPENAI_API_KEY}"   # OpenAI API key
+      max_pages: 50                  # Maximum pages to process
+      max_concurrent_pages: 5        # Parallel processing pages
+      # For Azure OpenAI, uncomment and configure these
+      # api_base: "https://your-resource.openai.azure.com"
+      # api_version: "2023-12-01-preview"
+      # api_type: "azure"
+
+  # Chunking configuration
+  chunking:
+    strategy: page_based             # Options: fixed_size, page_based, semantic
+    
+    # Fixed Size Chunker parameters
+    chunk_size: 1000                 # Target size of each chunk in characters
+    chunk_overlap: 200               # Overlap between chunks in characters
+    
+    # Page Based Chunker parameters
+    min_chunk_size: 100              # Minimum size of a chunk in characters
+    use_headers_fallback: true       # Use headers as fallback if no page numbers found
+    
+    # Semantic Chunker parameters
+    max_chunk_size: 1500             # Maximum size of each chunk in characters
+    min_chunk_size_semantic: 300     # Minimum size for semantic chunks
+    use_llm_boundary: false          # Whether to use LLM to determine optimal chunk boundaries
+    # When use_llm_boundary is true, uses generation.provider and generation.config
+
+  # Embedding configuration
+  embedding_processing:
+    # Uses embedding.provider and embedding.config from above
+    batch_size: 32                   # Override batch size for ingestion
+    max_workers: 1                   # Number of concurrent embedding workers
+    
+  # Vector store configuration
+  vector_store:
+    # Choose vector store type: "faiss", "pgvector", or "chromadb"
+    type: pgvector                   # Primary vector store type
+    dimension: 768                   # Must match embedding model dimension
+    
+    # FAISS specific settings
+    faiss:
+      index_type: HNSW               # Options: Flat, HNSW, IVF
+      metric: inner_product          # Options: inner_product, l2
+      nlist: 100                     # For IVF indexes
+      nprobe: 10                     # For IVF search
+      index_path: "./data/faiss_index.bin"      # Path to save/load index
+      metadata_path: "./data/faiss_metadata.pkl" # Path to save/load metadata
+    
+    # PgVector specific settings
+    pgvector:
+      connection_string: "postgresql://localhost:5432/postgres"  # PostgreSQL connection
+      table_name: "document_embeddings"  # Table name for storing vectors
+      index_method: "hnsw"           # Options: ivfflat, hnsw
+      metadata_path: "./data/pgvector_metadata.pkl"  # Optional metadata backup
+    
+    # ChromaDB specific settings
+    chromadb:
+      persist_directory: "./data/chromadb"        # Directory to persist data
+      collection_name: "document_embeddings"     # Collection name
+      distance_function: "cosine"    # Options: cosine, l2, ip
+
+  # Processing configuration
+  processing:
+    max_concurrent_documents: 5      # Maximum concurrent document processing
+    retry_attempts: 3                # Number of retry attempts for failed operations
+    retry_delay_seconds: 1           # Delay between retries
+    max_chunks_per_document: 100     # Maximum chunks per document
+
+# Chatbot API settings
+chatbot:
+  port: 8001                         # Chatbot API server port
+  host: 0.0.0.0                      # Chatbot API server host
+  workers: 4                         # Number of worker processes
+  
+  # Document retrieval configuration
+  retrieval:
+    vector_store:
+      type: pgvector                 # Must match ingestion vector store type
+      connection_string: "postgresql://localhost:5432/postgres"
+      table_name: "document_embeddings"  # Must match ingestion table name
+      dimension: 768                 # Must match embedding model dimension
+      index_method: "hnsw"           # Options: ivfflat, hnsw
+    top_k: 5                         # Number of documents to retrieve
+    similarity_threshold: 0.7        # Minimum similarity threshold
+    
+  # Document reranking configuration
+  reranking:
+    enabled: true                    # Enable/disable reranking
+    type: custom                     # Options: custom, cross_encoder
+    model_name: cross-encoder/ms-marco-MiniLM-L-6-v2  # Only used for cross_encoder type
+    top_k: 3                         # Number of documents after reranking
+    score_threshold: 0.5             # Minimum score threshold
+    # Custom reranker weights
+    keyword_weight: 0.3              # Weight for keyword matching
+    tfidf_weight: 0.4                # Weight for TF-IDF similarity
+    length_weight: 0.2               # Weight for document length
+    position_weight: 0.1             # Weight for document position
+    min_score_threshold: 0.0         # Minimum score threshold
+    
+  # Response generation configuration
+  generation:
+    # Uses generation.provider and generation.config from above
+    temperature: 0.2                 # Override temperature for chatbot
+    max_output_tokens: 1024          # Override max tokens for chatbot
+    templates_dir: config/prompts/chatbot  # Directory containing prompt templates
+    template: rag_prompt.jinja2      # Default prompt template file
+    
+  # Memory configuration
+  memory:
+    # Memory type: "simple", "mem0", "langgraph", or "langgraph_checkpoint"
+    type: langgraph_checkpoint       # Memory system type
+    
+    # LangGraph memory settings
+    store_type: postgres             # Options: in_memory, postgres
+    embedding_dimensions: 768        # Must match embedding dimension
+    max_history: 20                  # Maximum conversation history length
+    
+    # PostgreSQL settings (only used if store_type is "postgres")
+    postgres:
+      connection_string: "postgresql://rushabhsmacbook@localhost:5432/langgraph_test_db"
+    
+    # Legacy settings for simple memory
+    max_messages: 20                 # Maximum messages to store
+    message_expiry_minutes: 60       # Message expiry time
+    max_sessions: 1000               # Maximum concurrent sessions
+
+# API configuration (shared by both ingestion and chatbot APIs)
+api:
+  # Ingestion API specific settings
+  ingestion:
+    cors_origins: ["*"]              # CORS allowed origins
+    require_api_key: true            # Whether API key is required
+    api_keys: []                     # List of valid API keys (loaded from security.api_keys)
+    rate_limit:
+      enabled: true                  # Enable rate limiting
+      provider: local                # Options: local, redis
+      times: 100                     # Number of requests
+      seconds: 60                    # Time window
+      redis_url: "redis://localhost:6379/0"  # Redis URL if using redis
+  
+  # Chatbot API specific settings
+  chatbot:
+    cors_origins: ["*"]              # CORS allowed origins
+    require_api_key: true            # Whether API key is required
+    api_keys: []                     # List of valid API keys (loaded from security.api_keys)
+
+# Logging configuration
+logging:
+  level: INFO                        # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"  # Log format
+  file_path: null                    # Optional log file path (null = console only)
+  max_file_size: 10485760           # Maximum log file size in bytes (10MB)
+  backup_count: 5                    # Number of backup log files to keep
+
+# Health check configuration
+health_check:
+  enabled: true                      # Enable health checks
+  interval_seconds: 30               # Health check interval
+  timeout_seconds: 10                # Health check timeout
+
+# Authentication health monitoring
+auth_monitoring:
+  enabled: true                      # Enable auth monitoring
+  log_health_status: true            # Log auth health status
+  validate_on_startup: true          # Validate auth on startup
+
+# Environment variables required (for reference):
+# COIN_CONSUMER_ENDPOINT_URL=https://oauth-server/oauth2/token
+# COIN_CONSUMER_CLIENT_ID=your-client-id
+# COIN_CONSUMER_CLIENT_SECRET=your-client-secret
+# COIN_CONSUMER_SCOPE=https://www.googleapis.com/auth/cloud-platform
+# PROJECT_ID=your-gcp-project-id
+# VERTEXAI_API_ENDPOINT=us-central1-aiplatform.googleapis.com
+# API_KEY=your-api-key
+# ADMIN_API_KEY=your-admin-api-key
+# GROQ_API_KEY=your-groq-api-key (if using Groq)
+# OPENAI_API_KEY=your-openai-api-key (if using OpenAI)
+
+##############################################
+# Configuration Notes:
+##############################################
+# 1. Embedding dimensions must match across all components:
+#    - text-embedding-004 (Vertex AI) = 768 dimensions
+#    - all-mpnet-base-v2 (Sentence Transformers) = 768 dimensions
+#    - text-embedding-3-small (OpenAI) = 1536 dimensions
+#    - textembedding-gecko-multilingual (Vertex AI legacy) = 768 dimensions
+#
+# 2. Vector store configuration must match between ingestion and chatbot
+#
+# 3. Parser selection affects document processing quality:
+#    - vision_parser: Best for PDFs with complex layouts, images, tables
+#    - simple_text: Fast for plain text files
+#    - groq_vision_parser: Alternative vision parser using Groq
+#    - openai_vision: Alternative vision parser using OpenAI
+#
+# 4. Chunking strategy affects retrieval performance:
+#    - page_based: Best for documents with clear page structure
+#    - fixed_size: Consistent chunk sizes, good for general use
+#    - semantic: Best quality but requires LLM calls (slower)
+#
+# 5. Memory types:
+#    - simple: In-memory, fast but not persistent
+#    - langgraph_checkpoint: Persistent with PostgreSQL, production-ready
+#
+# 6. All authentication uses universal token system from environment variables
+##############################################

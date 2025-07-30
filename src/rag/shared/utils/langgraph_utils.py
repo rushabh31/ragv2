@@ -229,11 +229,10 @@ async def generate_node(state: RAGWorkflowState) -> RAGWorkflowState:
     try:
         from src.rag.core.interfaces.base import Document
         from src.rag.shared.utils.config_manager import ConfigManager
-        from src.rag.chatbot.generators.generator_factory import GeneratorFactory
+        from src.models.generation.model_factory import GenerationModelFactory
         
-        config = ConfigManager().get_section("chatbot.generation", {})
-        # Use the factory to create the appropriate generator based on config
-        generator = await GeneratorFactory.create_generator(config)
+        # Use factory to create generator - it will automatically read config from YAML
+        generator = GenerationModelFactory.create_model()
         
         # Start metrics tracking
         if "metrics" not in state:

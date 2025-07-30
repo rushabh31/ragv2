@@ -16,15 +16,18 @@ chatbot:
   retrieval:
     # Vector Store Configuration (must match ingestion config)
     vector_store:
-      provider: "faiss"         # Options: "faiss", "pgvector", "chromadb"
+      provider: "pgvector"      # Options: "faiss", "pgvector", "chromadb"
       config:
         dimension: 768          # Must match embedding model dimension
-        index_path: "./data/faiss_index.bin"
-        metadata_path: "./data/faiss_metadata.pkl"
+        connection_string: "postgresql://rushabhsmacbook@localhost:5432/rag_vector_db"
+        table_name: "document_embeddings"
+        schema_name: "public"   # PostgreSQL schema name (default: 'public')
+        index_method: "hnsw"    # Options: "ivfflat", "hnsw"
+        metadata_path: "./data/pgvector_metadata.pkl"
     
     # Embedding Configuration (must match ingestion config)
     embedding:
-      provider: "vertex"        # Options: "vertex", "vertex_ai", "openai", "openai_universal", "azure_openai"
+      provider: "vertex_ai"     # Options: "vertex", "vertex_ai", "openai", "openai_universal", "azure_openai"
       config:
         model: "text-embedding-004"     # Must match ingestion embedding model
         batch_size: 100
@@ -47,7 +50,7 @@ chatbot:
     max_history: 10               # Maximum conversation history length
     store_type: "postgres"        # Options: "in_memory", "postgres"
     postgres:
-      connection_string: "postgresql://username:password@localhost:5432/langgraph_db"
+      connection_string: "postgresql://rushabhsmacbook@localhost:5432/langgraph_memory_db"
 
   # Workflow Configuration
   workflow:

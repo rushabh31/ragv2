@@ -39,7 +39,7 @@ class OpenAIVisionParser(BaseDocumentParser):
         
         # Load configuration for OpenAI
         config_manager = ConfigManager()
-        self.vertex_config = config_manager.get_config("vertex")
+        self.vertex_config = config_manager.get_section("vertex")
         if not self.vertex_config:
             raise ValueError("Vertex configuration not found in config. Required for token authentication.")
     

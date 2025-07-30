@@ -34,7 +34,7 @@ class GroqGenerator(BaseGenerator):
         
         # Load generation configuration from system config
         config_manager = ConfigManager()
-        system_config = config_manager.get_config("generation")
+        system_config = config_manager.get_section("generation")
         if system_config and system_config.get("provider") == "groq":
             generation_config = system_config.get("config", {})
             self.model_name = generation_config.get("model_name", self.model_name)

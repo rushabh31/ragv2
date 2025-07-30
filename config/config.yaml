@@ -67,19 +67,19 @@ ingestion:
     chunk_size: 1000
     chunk_overlap: 200
   embedding:
-    # Switch between "vertex" and "openai"
-    provider: vertex
+    # Switch between "vertex_ai", "vertex", "openai", "sentence_transformer"
+    provider: vertex_ai
     # Vertex AI settings - model only
     # project_id and location loaded directly from environment variables
-    model: textembedding-gecko-multilingual
-    batch_size: 32
-    max_workers: 1
+    model: text-embedding-004
+    batch_size: 100
+    max_workers: 4
   vector_store:
     # Choose vector store type: "faiss", "pgvector", or "chromadb"
-    type: pgvector
+    # Temporarily using FAISS while setting up pgvector
+    type: faiss
     # Common settings
-    # path: ./data/vector_store
-    dimension: 384  # Must match embedding model dimension (384 for all-MiniLM-L6-v2)
+    dimension: 768  # Must match embedding model dimension (768 for text-embedding-004)
     
     # FAISS specific settings
     faiss:
@@ -90,9 +90,11 @@ ingestion:
     
     # PgVector specific settings
     pgvector:
-      connection_string: "postgresql://localhost:5432/postgres"
+      connection_string: "postgresql://rushabhsmacbook@localhost:5432/rag_vector_db"
       table_name: "document_embeddings"
+      schema_name: "public"  # PostgreSQL schema name (default: 'public')
       index_method: "hnsw"  # Options: ivfflat, hnsw
+      metadata_path: "./data/pgvector_metadata.pkl"
     
     # ChromaDB specific settings
     chromadb:
@@ -108,11 +110,17 @@ chatbot:
   retrieval:
     vector_store:
       type: pgvector
-      connection_string: "postgresql://localhost:5432/postgres"
+      connection_string: "postgresql://rushabhsmacbook@localhost:5432/rag_vector_db"
       table_name: "document_embeddings"
-      dimension: 384  # Must match embedding model dimension
+      schema_name: "public"  # PostgreSQL schema name (default: 'public')
+      dimension: 768  # Must match embedding model dimension (text-embedding-004)
       index_method: "hnsw"  # Options: ivfflat, hnsw
-    top_k: 5
+      metadata_path: "./data/pgvector_metadata.pkl"
+    embedding:
+      provider: vertex_ai
+      model: text-embedding-004
+      batch_size: 100
+    top_k: 10
     similarity_threshold: 0.7
   reranking:
     enabled: true
@@ -127,13 +135,13 @@ chatbot:
     position_weight: 0.1
     min_score_threshold: 0.0
   generation:
-    # Switch between "vertex" and "openai"
+    # Switch between "vertex", "anthropic_vertex", "openai", "azure_openai", "groq"
     provider: vertex
     # Vertex AI settings - model only
     # project_id and location loaded directly from environment variables
-    model: gemini-1.5-pro
+    model_name: gemini-1.5-pro-002
     temperature: 0.2
-    max_output_tokens: 1024
+    max_tokens: 2048
     top_p: 0.95
     templates_dir: config/prompts/chatbot
     template: rag_prompt.jinja2
@@ -146,8 +154,15 @@ chatbot:
     max_history: 20
     # PostgreSQL settings (only used if store_type is "postgres")
     postgres:
-      connection_string: "postgresql://rushabhsmacbook@localhost:5432/langgraph_test_db"
+      connection_string: "postgresql://rushabhsmacbook@localhost:5432/langgraph_memory_db"
     # Legacy settings for simple memory
     max_messages: 20
     message_expiry_minutes: 60
     max_sessions: 1000
+
+# Vision model configuration
+vision:
+  provider: vertex_ai
+  config:
+    model: gemini-1.5-pro-002
+    # project_id loaded from environment variable PROJECT_ID

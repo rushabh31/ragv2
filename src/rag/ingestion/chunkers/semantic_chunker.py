@@ -30,7 +30,7 @@ class SemanticChunker(BaseChunker):
         
         # Load generation config from system config
         config_manager = ConfigManager()
-        system_config = config_manager.get_config("generation")
+        system_config = config_manager.get_section("generation")
         self.generation_provider = system_config.get("provider", "vertex") if system_config else "vertex"
         self.generation_config = system_config.get("config", {}) if system_config else {}
 

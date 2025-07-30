@@ -283,20 +283,20 @@ class PgVectorStore(BaseVectorStore):
                             text(f'''
                                 INSERT INTO {self.qualified_table_name} 
                                 (chunk_id, soeid, session_id, content, metadata, embedding, 
-                                 page_number, file_name, document_id, chunk_index)
+                                 page_number, file_name, document_id, chunk_index, created_at)
                                 VALUES (:chunk_id, :soeid, :session_id, :content, :metadata, :embedding::vector, 
-                                        :page_number, :file_name, :document_id, :chunk_index)
+                                        :page_number, :file_name, :document_id, :chunk_index, CURRENT_TIMESTAMP)
                                 ON CONFLICT (chunk_id)
                                 DO UPDATE SET
-                                    soeid = :soeid,
-                                    session_id = :session_id,
-                                    content = :content,
-                                    metadata = :metadata,
-                                    embedding = :embedding::vector,
-                                    page_number = :page_number,
-                                    file_name = :file_name,
-                                    document_id = :document_id,
-                                    chunk_index = :chunk_index,
+                                    soeid = EXCLUDED.soeid,
+                                    session_id = EXCLUDED.session_id,
+                                    content = EXCLUDED.content,
+                                    metadata = EXCLUDED.metadata,
+                                    embedding = EXCLUDED.embedding,
+                                    page_number = EXCLUDED.page_number,
+                                    file_name = EXCLUDED.file_name,
+                                    document_id = EXCLUDED.document_id,
+                                    chunk_index = EXCLUDED.chunk_index,
                                     upload_timestamp = CURRENT_TIMESTAMP
                             '''),
                             {

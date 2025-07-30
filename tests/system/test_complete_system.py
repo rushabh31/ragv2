@@ -30,8 +30,8 @@ try:
     from src.models.vision import VertexVisionAI
     
     # Test RAG component imports
-    from src.rag.chatbot.generators.generator_factory import GeneratorFactory
-    from src.rag.ingestion.embedders.embedder_factory import EmbedderFactory
+    from src.models.generation.model_factory import GenerationModelFactory
+    from src.models.embedding.embedding_factory import EmbeddingModelFactory
     from src.rag.ingestion.parsers.vision_parser import VisionParser
     from src.rag.ingestion.chunkers.semantic_chunker import SemanticChunker
     
@@ -149,24 +149,21 @@ async def test_rag_generators():
     print("="*50)
     
     try:
-        # Test available generators
-        available = GeneratorFactory.get_available_generators()
-        print(f"Available generators: {list(available.keys())}")
+        # Test available generation providers
+        providers_to_test = ["vertex", "anthropic_vertex", "openai", "azure_openai"]
+        print(f"Testing generation providers: {providers_to_test}")
         
-        # Test creating generators
-        generators_to_test = ["vertex", "anthropic_vertex", "openai", "azure_openai"]
         results = {}
         
-        for gen_name in generators_to_test:
+        for provider in providers_to_test:
             try:
-                print(f"\nTesting {gen_name} generator...")
-                config = {"provider": gen_name, "model_name": "default"}
-                generator = await GeneratorFactory.create_generator(config)
-                print(f"  {gen_name} generator created: ✓")
-                results[gen_name] = True
+                print(f"\nTesting {provider} generation model...")
+                generator = GenerationModelFactory.create_model(provider)
+                print(f"  {provider} generation model created: ✓")
+                results[provider] = True
             except Exception as e:
-                print(f"  {gen_name} generator failed: {str(e)}")
-                results[gen_name] = False
+                print(f"  {provider} generation model failed: {str(e)}")
+                results[provider] = False
         
         return results
         
@@ -182,24 +179,21 @@ async def test_rag_embedders():
     print("="*50)
     
     try:
-        # Test available embedders
-        available = EmbedderFactory.get_available_embedders()
-        print(f"Available embedders: {list(available.keys())}")
+        # Test available embedding providers
+        providers_to_test = ["vertex_ai", "openai", "azure_openai"]
+        print(f"Testing embedding providers: {providers_to_test}")
         
-        # Test creating embedders
-        embedders_to_test = ["vertex_ai", "openai_universal", "azure_openai", "vertex", "openai"]
         results = {}
         
-        for emb_name in embedders_to_test:
+        for provider in providers_to_test:
             try:
-                print(f"\nTesting {emb_name} embedder...")
-                config = {"provider": emb_name, "model": "default"}
-                embedder = await EmbedderFactory.create_embedder(config)
-                print(f"  {emb_name} embedder created: ✓")
-                results[emb_name] = True
+                print(f"\nTesting {provider} embedding model...")
+                embedder = EmbeddingModelFactory.create_model(provider)
+                print(f"  {provider} embedding model created: ✓")
+                results[provider] = True
             except Exception as e:
-                print(f"  {emb_name} embedder failed: {str(e)}")
-                results[emb_name] = False
+                print(f"  {provider} embedding model failed: {str(e)}")
+                results[provider] = False
         
         return results
         

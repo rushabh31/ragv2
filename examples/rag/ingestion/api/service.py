@@ -20,9 +20,7 @@ from src.rag.ingestion.chunkers.base_chunker import BaseChunker
 from src.rag.ingestion.chunkers.fixed_size_chunker import FixedSizeChunker
 from src.rag.ingestion.chunkers.semantic_chunker import SemanticChunker
 from src.rag.ingestion.chunkers.page_based_chunker import PageBasedChunker
-from src.rag.ingestion.embedders.embedder_factory import EmbedderFactory
-from src.rag.ingestion.embedders.base_embedder import BaseEmbedder
-from src.rag.ingestion.embedders.vertex_embedder import VertexEmbedder
+from src.models.embedding.embedding_factory import EmbeddingModelFactory
 from src.rag.ingestion.indexers.base_vector_store import BaseVectorStore
 from src.rag.ingestion.indexers.faiss_vector_store import FAISSVectorStore
 from src.rag.ingestion.indexers.pgvector_store import PgVectorStore
@@ -92,11 +90,10 @@ class IngestionService:
         else:
             self._chunker = FixedSizeChunker(chunker_config)
         
-        # Initialize embedder using factory
+        # Initialize embedder using factory - it will automatically read config from YAML
         try:
-            embedder_config = config.get("embedding", {})
-            self._embedder = await EmbedderFactory.create_embedder(embedder_config)
-            logger.info(f"Embedder initialized successfully with provider: {embedder_config.get('provider', 'default')}")
+            self._embedder = EmbeddingModelFactory.create_model()
+            logger.info("Embedder initialized successfully from YAML configuration")
         except Exception as e:
             logger.error(f"Failed to initialize embedder: {str(e)}")
             raise EmbeddingError(f"Failed to initialize embedder: {str(e)}")
@@ -235,11 +232,34 @@ class IngestionService:
                     if 'created_at' not in doc.metadata:
                         doc.metadata['created_at'] = job.created_at.isoformat()
                         
-                    # Add filename if not present
-                    if 'filename' not in doc.metadata and file_path:
-                        doc.metadata['filename'] = os.path.basename(file_path)
-                
-                job.progress = 0.3
+                    # Add filename - prefer original filename from upload metadata
+                    if 'filename' not in doc.metadata:
+                        # First try to use original filename from upload metadata
+                        if metadata and 'original_filename' in metadata:
+                            doc.metadata['filename'] = metadata['original_filename']
+                            logger.info(f"Using original filename from metadata: {metadata['original_filename']}")
+                        elif metadata and 'upload_filename' in metadata:
+                            doc.metadata['filename'] = metadata['upload_filename']
+                            logger.info(f"Using upload filename from metadata: {metadata['upload_filename']}")
+                        elif file_path:
+                            # Fallback to temporary file path basename
+                            doc.metadata['filename'] = os.path.basename(file_path)
+                            logger.warning(f"Using temporary filename as fallback: {os.path.basename(file_path)}")
+                        else:
+                            doc.metadata['filename'] = 'unknown_file'
+                            logger.warning("No filename available, using 'unknown_file'")
+                    
+                    # Also ensure file_name is set for consistency with vision parser
+                    if 'file_name' not in doc.metadata:
+                        doc.metadata['file_name'] = doc.metadata.get('filename', 'unknown_file')
+                    
+                    # Merge any additional metadata from upload
+                    if metadata:
+                        for key, value in metadata.items():
+                            if key not in ['original_filename', 'upload_filename']:  # Skip these as they're handled above
+                                doc.metadata[key] = value
+                    
+                    job.progress = 0.3
             
             # Chunk documents
             job.progress = 0.4

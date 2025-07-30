@@ -33,7 +33,7 @@ class VertexGenerator(BaseGenerator):
         
         # Load generation configuration from system config
         config_manager = ConfigManager()
-        system_config = config_manager.get_config("generation")
+        system_config = config_manager.get_section("generation")
         if system_config:
             provider = system_config.get("provider", "vertex")
             # Map vertex to vertex_ai for the GenerationModelFactory

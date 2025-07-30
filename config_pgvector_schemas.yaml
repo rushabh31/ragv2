@@ -1,0 +1,314 @@
+# Comprehensive pgvector Configuration with Schema Support
+# ========================================================
+# This configuration demonstrates different schema setups for multi-tenancy and environment separation
+
+# System-wide settings
+system:
+  log_level: INFO
+  request_id_header: X-Request-ID
+  environment: development
+
+# Vision model configuration
+vision:
+  provider: vertex_ai
+  config:
+    model: gemini-2.5-pro
+    region: us-central1
+
+# Generation model configuration  
+generation:
+  provider: vertex
+  config:
+    model_name: gemini-1.5-pro-002
+    temperature: 0.2
+    max_tokens: 2048
+    top_p: 0.95
+
+# Embedding model configuration
+embedding:
+  provider: vertex_ai
+  config:
+    model: text-embedding-005
+    batch_size: 100
+    max_workers: 4
+
+# ===============================================
+# PRODUCTION ENVIRONMENT CONFIGURATION
+# ===============================================
+production:
+  ingestion:
+    vector_store:
+      provider: "pgvector"
+      config:
+        dimension: 768
+        connection_string: "postgresql://rushabhsmacbook@localhost:5432/rag_vector_db"
+        table_name: "document_embeddings"
+        schema_name: "rag_prod"           # Production schema
+        index_method: "hnsw"
+        metadata_path: "./data/prod/pgvector_metadata.pkl"
+
+  chatbot:
+    retrieval:
+      vector_store:
+        provider: "pgvector"
+        config:
+          dimension: 768
+          connection_string: "postgresql://rushabhsmacbook@localhost:5432/rag_vector_db"
+          table_name: "document_embeddings"
+          schema_name: "rag_prod"         # Production schema
+          index_method: "hnsw"
+          metadata_path: "./data/prod/pgvector_metadata.pkl"
+      embedding:
+        provider: "vertex_ai"
+        config:
+          model: "text-embedding-005"
+          batch_size: 100
+      top_k: 10
+      similarity_threshold: 0.7
+
+    memory:
+      type: "langgraph_checkpoint"
+      store_type: "postgres"
+      postgres:
+        connection_string: "postgresql://rushabhsmacbook@localhost:5432/langgraph_memory_db"
+
+# ===============================================
+# DEVELOPMENT ENVIRONMENT CONFIGURATION
+# ===============================================
+development:
+  ingestion:
+    vector_store:
+      provider: "pgvector"
+      config:
+        dimension: 768
+        connection_string: "postgresql://rushabhsmacbook@localhost:5432/rag_vector_db"
+        table_name: "document_embeddings"
+        schema_name: "rag_dev"            # Development schema
+        index_method: "hnsw"
+        metadata_path: "./data/dev/pgvector_metadata.pkl"
+
+  chatbot:
+    retrieval:
+      vector_store:
+        provider: "pgvector"
+        config:
+          dimension: 768
+          connection_string: "postgresql://rushabhsmacbook@localhost:5432/rag_vector_db"
+          table_name: "document_embeddings"
+          schema_name: "rag_dev"          # Development schema
+          index_method: "hnsw"
+          metadata_path: "./data/dev/pgvector_metadata.pkl"
+      embedding:
+        provider: "vertex_ai"
+        config:
+          model: "text-embedding-005"
+          batch_size: 100
+      top_k: 10
+      similarity_threshold: 0.7
+
+    memory:
+      type: "langgraph_checkpoint"
+      store_type: "postgres"
+      postgres:
+        connection_string: "postgresql://rushabhsmacbook@localhost:5432/langgraph_memory_db"
+
+# ===============================================
+# TEST ENVIRONMENT CONFIGURATION
+# ===============================================
+test:
+  ingestion:
+    vector_store:
+      provider: "pgvector"
+      config:
+        dimension: 768
+        connection_string: "postgresql://rushabhsmacbook@localhost:5432/rag_vector_db"
+        table_name: "document_embeddings"
+        schema_name: "rag_test"           # Test schema
+        index_method: "ivfflat"           # Use simpler index for testing
+        metadata_path: "./data/test/pgvector_metadata.pkl"
+
+  chatbot:
+    retrieval:
+      vector_store:
+        provider: "pgvector"
+        config:
+          dimension: 768
+          connection_string: "postgresql://rushabhsmacbook@localhost:5432/rag_vector_db"
+          table_name: "document_embeddings"
+          schema_name: "rag_test"         # Test schema
+          index_method: "ivfflat"         # Use simpler index for testing
+          metadata_path: "./data/test/pgvector_metadata.pkl"
+      embedding:
+        provider: "vertex_ai"
+        config:
+          model: "text-embedding-005"
+          batch_size: 50                  # Smaller batch for testing
+      top_k: 5                           # Fewer results for testing
+      similarity_threshold: 0.6
+
+    memory:
+      type: "simple"                     # Use simple memory for testing
+
+# ===============================================
+# MULTI-TENANT CONFIGURATION EXAMPLES
+# ===============================================
+tenant_configurations:
+  tenant_a:
+    vector_store:
+      provider: "pgvector"
+      config:
+        dimension: 768
+        connection_string: "postgresql://rushabhsmacbook@localhost:5432/rag_vector_db"
+        table_name: "document_embeddings"
+        schema_name: "tenant_a"          # Tenant-specific schema
+        index_method: "hnsw"
+        metadata_path: "./data/tenant_a/pgvector_metadata.pkl"
+
+  tenant_b:
+    vector_store:
+      provider: "pgvector"
+      config:
+        dimension: 768
+        connection_string: "postgresql://rushabhsmacbook@localhost:5432/rag_vector_db"
+        table_name: "document_embeddings"
+        schema_name: "tenant_b"          # Tenant-specific schema
+        index_method: "hnsw"
+        metadata_path: "./data/tenant_b/pgvector_metadata.pkl"
+
+# ===============================================
+# DEFAULT CONFIGURATION (PUBLIC SCHEMA)
+# ===============================================
+# Vector Store Configuration
+vector_store:
+  provider: "pgvector"
+  config:
+    dimension: 768
+    connection_string: "postgresql://rushabhsmacbook@localhost:5432/rag_vector_db"
+    table_name: "document_embeddings"
+    schema_name: "public"               # Default public schema
+    index_method: "hnsw"
+    metadata_path: "./data/pgvector_metadata.pkl"
+
+# Ingestion Configuration
+ingestion:
+  port: 8000
+  host: 0.0.0.0
+  workers: 4
+  
+  parser:
+    provider: vision_parser
+    config:
+      max_pages: 100
+      max_concurrent_pages: 5
+  
+  chunking:
+    strategy: page_based
+    chunk_size: 1000
+    chunk_overlap: 200
+    min_chunk_size: 100
+    use_headers_fallback: true
+  
+  processing:
+    max_concurrent_documents: 5
+    retry_attempts: 3
+    retry_delay_seconds: 1
+    max_chunks_per_document: 100
+
+# Chatbot Configuration
+chatbot:
+  port: 8001
+  host: 0.0.0.0
+  workers: 4
+  
+  retrieval:
+    vector_store:
+      provider: "pgvector"
+      config:
+        dimension: 768
+        connection_string: "postgresql://rushabhsmacbook@localhost:5432/rag_vector_db"
+        table_name: "document_embeddings"
+        schema_name: "public"           # Default public schema
+        index_method: "hnsw"
+        metadata_path: "./data/pgvector_metadata.pkl"
+    embedding:
+      provider: "vertex_ai"
+      config:
+        model: "text-embedding-005"
+        batch_size: 100
+    top_k: 10
+    similarity_threshold: 0.7
+  
+  reranking:
+    enabled: true
+    type: custom
+    config:
+      top_k: 5
+      boost_recent: true
+      boost_factor: 1.2
+  
+  generation:
+    provider: vertex
+    config:
+      model_name: gemini-1.5-pro-002
+      temperature: 0.2
+      max_tokens: 2048
+      top_p: 0.95
+      templates_dir: config/prompts/chatbot
+      template: rag_prompt.jinja2
+  
+  memory:
+    type: "langgraph_checkpoint"
+    max_history: 20
+    store_type: "postgres"
+    postgres:
+      connection_string: "postgresql://rushabhsmacbook@localhost:5432/langgraph_memory_db"
+
+# API Configuration
+api:
+  host: "0.0.0.0"
+  port: 8000
+  cors_origins: ["*"]
+  api_key_required: true
+
+# Security settings
+security:
+  api_keys:
+    - name: default
+      key: "${API_KEY}"
+      roles:
+        - user
+    - name: admin
+      key: "${ADMIN_API_KEY}"
+      roles:
+        - user
+        - admin
+  rate_limiting:
+    enabled: true
+    provider: local
+    requests: 100
+    period_seconds: 60
+
+# Cache settings
+cache:
+  enabled: true
+  provider: local
+  default_ttl_seconds: 3600
+  max_size: 10000
+  cleanup_interval_seconds: 300
+
+# Logging Configuration
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# Health Check Configuration
+health_check:
+  enabled: true
+  interval_seconds: 30
+  timeout_seconds: 10
+
+# Authentication Health Monitoring
+auth_monitoring:
+  enabled: true
+  log_health_status: true
+  validate_on_startup: true

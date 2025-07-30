@@ -41,22 +41,38 @@ class FAISSVectorStore(BaseVectorStore):
         
         This must be called before adding or searching vectors.
         """
+        logger.info(f"FAISS initialize() called. Current _initialized state: {self._initialized}")
+        
         if self._initialized:
+            logger.info("FAISS already initialized, returning early")
             return
         
         try:
+            logger.info(f"Starting FAISS initialization with paths: index={self.index_path}, metadata={self.metadata_path}")
+            
             # Try to load existing index if paths are provided
             if self.index_path and os.path.exists(self.index_path) and self.metadata_path and os.path.exists(self.metadata_path):
+                logger.info("Found existing index files, loading...")
                 await self._load_index()
+                logger.info(f"Loaded existing index with {len(self.chunks)} chunks")
             else:
+                logger.info("No existing index found, creating new index...")
                 # Create new index
                 await self._create_index()
+                logger.info("New index created successfully")
             
             self._initialized = True
-            logger.info(f"Initialized FAISS index of type {self.index_type}")
+            logger.info(f"✅ FAISS index initialized successfully! Type: {self.index_type}, Initialized: {self._initialized}")
+            
+            # Log current state
+            if self.index:
+                logger.info(f"Index state: ntotal={self.index.ntotal}, dimension={self.dimension}")
+            logger.info(f"Chunks stored: {len(self.chunks)}")
+            
         except Exception as e:
             error_msg = f"Failed to initialize FAISS index: {str(e)}"
             logger.error(error_msg, exc_info=True)
+            logger.error(f"FAISS initialization failed, _initialized remains: {self._initialized}")
             raise VectorStoreError(error_msg) from e
     
     async def _create_index(self) -> None:
