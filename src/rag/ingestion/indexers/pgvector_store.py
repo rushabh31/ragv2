@@ -14,13 +14,14 @@ from datetime import datetime
 from src.rag.ingestion.indexers.base_vector_store import BaseVectorStore
 from src.rag.core.interfaces.base import Chunk, SearchResult
 from src.rag.core.exceptions.exceptions import VectorStoreError
+from src.rag.shared.utils.env_manager import env_manager
 
 logger = logging.getLogger(__name__)
 
 class PgVectorStore(BaseVectorStore):
     """Vector store using PostgreSQL with pgvector extension for similarity search."""
     
-    def __init__(self, config: Dict[str, Any] = None):
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
         """Initialize the pgvector store with configuration.
         
         Args:
@@ -32,7 +33,7 @@ class PgVectorStore(BaseVectorStore):
                 - metadata_path: Optional path to save metadata backup
                 - index_method: Vector index method ('ivfflat' or 'hnsw')
         """
-        super().__init__(config)
+        super().__init__(config or {})
         self.dimension = self.config.get("dimension", 768)
         self.connection_string = self.config.get("connection_string")
         self.table_name = self.config.get("table_name", "document_embeddings")
@@ -58,6 +59,9 @@ class PgVectorStore(BaseVectorStore):
             return
             
         try:
+            if not self.connection_string:
+                raise VectorStoreError("PostgreSQL connection string is required")
+                
             # Convert asyncpg connection string to SQLAlchemy async format
             if self.connection_string.startswith('postgresql://'):
                 # Convert to asyncpg format for SQLAlchemy
@@ -100,6 +104,9 @@ class PgVectorStore(BaseVectorStore):
     
     async def _setup_database(self) -> None:
         """Set up the database with required extensions, schema, and tables."""
+        if not self.engine:
+            raise VectorStoreError("Database engine not initialized")
+            
         async with self.engine.begin() as conn:
             # Enable pgvector extension
             await conn.execute(text('CREATE EXTENSION IF NOT EXISTS vector'))
@@ -162,6 +169,11 @@ class PgVectorStore(BaseVectorStore):
     
     async def _load_metadata(self) -> None:
         """Load chunks metadata from disk."""
+        if not self.metadata_path:
+            logger.debug("No metadata path provided, loading from database")
+            await self._load_chunks_from_db()
+            return
+            
         try:
             with open(self.metadata_path, "rb") as f:
                 self.chunks = pickle.load(f)
@@ -173,6 +185,11 @@ class PgVectorStore(BaseVectorStore):
     
     async def _load_chunks_from_db(self) -> None:
         """Load chunks from the database."""
+        if not self.async_session_factory:
+            logger.warning("Database session factory not initialized, cannot load chunks")
+            self.chunks = []
+            return
+            
         try:
             async with self.async_session_factory() as session:
                 result = await session.execute(
@@ -211,9 +228,13 @@ class PgVectorStore(BaseVectorStore):
             self.chunks = []
     
     async def _save_metadata(self) -> None:
-        """Save chunks metadata to disk."""
+        """Save chunks metadata to disk only if PostgreSQL is not configured."""
         if not self.metadata_path:
-            logger.warning("No metadata_path provided, skipping metadata save")
+            logger.debug("No metadata_path provided, skipping local metadata save")
+            return
+            
+        if self.connection_string:
+            logger.info("PostgreSQL is configured, skipping local metadata save")
             return
             
         try:
@@ -256,6 +277,9 @@ class PgVectorStore(BaseVectorStore):
                     raise VectorStoreError(f"Vector dimension mismatch: got {len(embedding)}, expected {self.dimension}")
             
             # Insert chunks into database
+            if not self.async_session_factory:
+                raise VectorStoreError("Database session factory not initialized")
+                
             async with self.async_session_factory() as session:
                 # Start transaction (automatically handled by session)
                 try:
@@ -374,6 +398,10 @@ class PgVectorStore(BaseVectorStore):
             # Execute vector similarity search
             # Convert embedding list to string format for pgvector
             embedding_str = '[' + ','.join(map(str, query_embedding)) + ']'
+            
+            if not self.async_session_factory:
+                raise VectorStoreError("Database session factory not initialized")
+                
             async with self.async_session_factory() as session:
                 result = await session.execute(
                     text(f'''
@@ -462,6 +490,6 @@ class PgVectorStore(BaseVectorStore):
             
     async def close(self) -> None:
         """Close the pgvector store connections."""
-        if self.conn_pool:
-            await self.conn_pool.close()
+        if self.engine:
+            await self.engine.dispose()
             logger.info("Closed pgvector database connections")

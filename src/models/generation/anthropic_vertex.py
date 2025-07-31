@@ -14,6 +14,7 @@ from google.oauth2.credentials import Credentials
 import httpx
 
 from src.utils import UniversalAuthManager
+from src.rag.shared.utils.env_manager import env_manager
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,7 @@ class AnthropicVertexGenAI:
         """
         self.model_name = model_name
         self.region = region
-        self.project_id = project_id or os.environ.get("PROJECT_ID")
+        self.project_id = project_id or env_manager.get("PROJECT_ID")
         self._client = None
         self._auth_manager = UniversalAuthManager(f"anthropic_vertex_{model_name}")
         self._auth_manager.configure()
@@ -116,7 +117,7 @@ class AnthropicVertexGenAI:
             # Make the API call
             response = await asyncio.to_thread(
                 self._client.messages.create,
-                extra_headers={"x-r2d2-user": os.getenv("USERNAME", "")},
+                extra_headers={"x-r2d2-user": env_manager.get("USERNAME", "")},
                 model=self.model_name,
                 max_tokens=max_tokens,
                 temperature=temperature,

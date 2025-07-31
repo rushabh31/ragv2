@@ -17,6 +17,8 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from src.rag.shared.utils.env_manager import env_manager
+
 logger = logging.getLogger(__name__)
 
 
@@ -37,14 +39,14 @@ class TokenConfig:
     def from_env(cls) -> 'TokenConfig':
         """Create TokenConfig from environment variables."""
         return cls(
-            endpoint_url=os.environ.get("COIN_CONSUMER_ENDPOINT_URL", ""),
-            client_id=os.environ.get("COIN_CONSUMER_CLIENT_ID", ""),
-            client_secret=os.environ.get("COIN_CONSUMER_CLIENT_SECRET", ""),
-            scope=os.environ.get("COIN_CONSUMER_SCOPE", ""),
-            timeout=int(os.environ.get("TOKEN_REQUEST_TIMEOUT", "10")),
-            verify_ssl=os.environ.get("TOKEN_VERIFY_SSL", "false").lower() == "true",
-            max_retries=int(os.environ.get("TOKEN_MAX_RETRIES", "3")),
-            backoff_factor=float(os.environ.get("TOKEN_BACKOFF_FACTOR", "0.3"))
+            endpoint_url=env_manager.get("COIN_CONSUMER_ENDPOINT_URL", ""),
+            client_id=env_manager.get("COIN_CONSUMER_CLIENT_ID", ""),
+            client_secret=env_manager.get("COIN_CONSUMER_CLIENT_SECRET", ""),
+            scope=env_manager.get("COIN_CONSUMER_SCOPE", ""),
+            timeout=env_manager.get_int("TOKEN_REQUEST_TIMEOUT", 10),
+            verify_ssl=env_manager.get_bool("TOKEN_VERIFY_SSL", False),
+            max_retries=env_manager.get_int("TOKEN_MAX_RETRIES", 3),
+            backoff_factor=env_manager.get_float("TOKEN_BACKOFF_FACTOR", 0.3)
         )
 
 

@@ -27,6 +27,7 @@ except ImportError:
 
 from src.rag.chatbot.memory.base_memory import BaseMemory
 from src.rag.core.exceptions.exceptions import MemoryError
+from src.rag.shared.utils.env_manager import env_manager
 
 logger = logging.getLogger(__name__)
 
@@ -37,13 +38,13 @@ class LangGraphMemory(BaseMemory):
     for conversation history and long-term memory with SOEID support.
     """
     
-    def __init__(self, config: Dict[str, Any] = None):
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
         """Initialize the LangGraph memory system with configuration.
         
         Args:
             config: Configuration dictionary for the memory system
         """
-        super().__init__(config)
+        super().__init__(config or {})
         
         # Check if LangGraph store is available
         if not LANGGRAPH_STORE_AVAILABLE:
@@ -66,7 +67,7 @@ class LangGraphMemory(BaseMemory):
         
         logger.info(f"LangGraph memory system initialized with {self._store_type} store")
     
-    def _init_store(self) -> BaseStore:
+    def _init_store(self) -> Optional[object]:
         """Initialize the appropriate LangGraph store.
         
         Returns:
@@ -89,7 +90,7 @@ class LangGraphMemory(BaseMemory):
             logger.error(error_msg)
             raise MemoryError(error_msg) from e
     
-    def _init_in_memory_store(self) -> InMemoryStore:
+    def _init_in_memory_store(self) -> Optional[object]:
         """Initialize in-memory store.
         
         Returns:
@@ -111,6 +112,9 @@ class LangGraphMemory(BaseMemory):
             
             self._embedding_function = simple_embed
         
+        if InMemoryStore is None:
+            return None
+            
         return InMemoryStore(
             index={
                 "embed": self._embedding_function,
@@ -118,7 +122,7 @@ class LangGraphMemory(BaseMemory):
             }
         )
     
-    def _init_postgres_store(self) -> PostgresStore:
+    def _init_postgres_store(self) -> Optional[object]:
         """Initialize PostgreSQL store.
         
         Returns:
@@ -147,6 +151,9 @@ class LangGraphMemory(BaseMemory):
             
             self._embedding_function = simple_embed
         
+        if PostgresStore is None:
+            return None
+            
         return PostgresStore(
             connection_string=connection_string,
             index={
@@ -194,45 +201,52 @@ class LangGraphMemory(BaseMemory):
                 }
                 
                 # Store the interaction
-                self._store.put(namespace, interaction_id, interaction_data)
-                
-                # Also store as separate messages for easier retrieval
-                user_message_id = f"{interaction_id}_user"
-                assistant_message_id = f"{interaction_id}_assistant"
-                
-                user_message = {
-                    "session_id": session_id,
-                    "soeid": soeid,
-                    "role": "user",
-                    "content": query,
-                    "timestamp": timestamp,
-                    "metadata": metadata or {},
-                    "message_id": user_message_id
-                }
-                
-                assistant_message = {
-                    "session_id": session_id,
-                    "soeid": soeid,
-                    "role": "assistant", 
-                    "content": response,
-                    "timestamp": timestamp,
-                    "metadata": metadata or {},
-                    "message_id": assistant_message_id
-                }
-                
-                # Store messages separately
-                self._store.put(namespace, user_message_id, user_message)
-                self._store.put(namespace, assistant_message_id, assistant_message)
-                
-                # If SOEID is provided, also store in user-specific namespace
-                if soeid:
-                    user_namespace = (soeid, "user_conversations")
-                    self._store.put(user_namespace, interaction_id, interaction_data)
-                    self._store.put(user_namespace, user_message_id, user_message)
-                    self._store.put(user_namespace, assistant_message_id, assistant_message)
-                    logger.info(f"Added interaction {interaction_id} to SOEID namespace {user_namespace}")
+                if self._store is not None and hasattr(self._store, 'put'):
+                    try:
+                        getattr(self._store, 'put')(namespace, interaction_id, interaction_data)
+                        
+                        # Also store as separate messages for easier retrieval
+                        user_message_id = f"{interaction_id}_user"
+                        assistant_message_id = f"{interaction_id}_assistant"
+                        
+                        user_message = {
+                            "session_id": session_id,
+                            "soeid": soeid,
+                            "role": "user",
+                            "content": query,
+                            "timestamp": timestamp,
+                            "metadata": metadata or {},
+                            "message_id": user_message_id
+                        }
+                        
+                        assistant_message = {
+                            "session_id": session_id,
+                            "soeid": soeid,
+                            "role": "assistant", 
+                            "content": response,
+                            "timestamp": timestamp,
+                            "metadata": metadata or {},
+                            "message_id": assistant_message_id
+                        }
+                        
+                        # Store messages separately
+                        getattr(self._store, 'put')(namespace, user_message_id, user_message)
+                        getattr(self._store, 'put')(namespace, assistant_message_id, assistant_message)
+                        
+                        # If SOEID is provided, also store in user-specific namespace
+                        if soeid:
+                            user_namespace = (soeid, "user_conversations")
+                            getattr(self._store, 'put')(user_namespace, interaction_id, interaction_data)
+                            getattr(self._store, 'put')(user_namespace, user_message_id, user_message)
+                            getattr(self._store, 'put')(user_namespace, assistant_message_id, assistant_message)
+                            logger.info(f"Added interaction {interaction_id} to SOEID namespace {user_namespace}")
+                        else:
+                            logger.warning(f"No SOEID provided for interaction {interaction_id}, not storing in SOEID namespace.")
+                    except Exception as e:
+                        logger.error(f"Failed to store interaction: {str(e)}")
+                        return False
                 else:
-                    logger.warning(f"No SOEID provided for interaction {interaction_id}, not storing in SOEID namespace.")
+                    logger.error("Store is not initialized or does not support put method, cannot add interaction")
                 
                 logger.debug(f"Added interaction {interaction_id} to session {session_id} with SOEID {soeid}")
                 return True
@@ -258,7 +272,11 @@ class LangGraphMemory(BaseMemory):
                 namespace = (session_id, "conversation")
                 
                 # Get all messages for this session
-                messages = self._store.search(namespace, query="", limit=limit or self.max_history)
+                if self._store is None or not hasattr(self._store, 'search'):
+                    logger.error("Store is not initialized or does not support search")
+                    return []
+                    
+                messages = getattr(self._store, 'search')(namespace, query="", limit=limit or self.max_history)
                 
                 # Sort by timestamp
                 sorted_messages = sorted(messages, key=lambda x: x.value.get("timestamp", ""))
@@ -299,7 +317,11 @@ class LangGraphMemory(BaseMemory):
                 namespace = (session_id, "conversation")
                 
                 # Use semantic search to find relevant messages
-                relevant_messages = self._store.search(
+                if self._store is None or not hasattr(self._store, 'search'):
+                    logger.error("Store is not initialized or does not support search")
+                    return []
+                    
+                relevant_messages = getattr(self._store, 'search')(
                     namespace, 
                     query=query, 
                     limit=limit or self.max_history
@@ -329,8 +351,8 @@ class LangGraphMemory(BaseMemory):
             async with self._lock:
                 # Gather all session_ids from namespaces or known sessions
                 session_ids = set()
-                if hasattr(self._store, 'namespaces'):
-                    for ns in self._store.namespaces():
+                if self._store is not None and hasattr(self._store, 'namespaces'):
+                    for ns in getattr(self._store, 'namespaces')():
                         if isinstance(ns, tuple) and len(ns) == 2 and ns[1] == "conversation":
                             session_ids.add(ns[0])
                 else:
@@ -341,7 +363,9 @@ class LangGraphMemory(BaseMemory):
                 for session_id in session_ids:
                     session_namespace = (session_id, "conversation")
                     try:
-                        msgs = self._store.search(session_namespace, query="", limit=10000)
+                        if self._store is None or not hasattr(self._store, 'search'):
+                            continue
+                        msgs = getattr(self._store, 'search')(session_namespace, query="", limit=10000)
                         # Convert to dicts
                         msg_dicts = [
                             {
@@ -384,7 +408,11 @@ class LangGraphMemory(BaseMemory):
                 user_namespace = (soeid, "user_conversations")
                 
                 # Use semantic search to find relevant messages for this user
-                relevant_messages = self._store.search(
+                if self._store is None or not hasattr(self._store, 'search'):
+                    logger.error("Store is not initialized or does not support search")
+                    return []
+                    
+                relevant_messages = getattr(self._store, 'search')(
                     user_namespace, 
                     query=query, 
                     limit=limit or self.max_history
@@ -410,12 +438,12 @@ class LangGraphMemory(BaseMemory):
             return await self.get_user_history_by_soeid(soeid, limit)
     
     async def add(self, 
-                session_id: str = None,
-                query: str = None, 
-                response: str = None, 
+                session_id: Optional[str] = None,
+                query: Optional[str] = None, 
+                response: Optional[str] = None, 
                 metadata: Optional[Dict[str, Any]] = None,
-                user_id: str = None,
-                messages: List[Dict[str, str]] = None) -> bool:
+                user_id: Optional[str] = None,
+                messages: Optional[List[Dict[str, str]]] = None) -> bool:
         """Add messages to the conversation memory.
         
         Args:
@@ -433,7 +461,7 @@ class LangGraphMemory(BaseMemory):
             # Handle different parameter styles
             if session_id is not None and (query is not None or response is not None):
                 # New style parameters
-                return await self._add_interaction(session_id, query, response, metadata)
+                return await self._add_interaction(session_id, query or "", response or "", metadata)
                 
             elif messages and user_id:
                 # Legacy style parameters
@@ -523,11 +551,16 @@ class LangGraphMemory(BaseMemory):
                 namespace = (session_id, "conversation")
                 
                 # Get all items in the namespace
-                items = self._store.search(namespace, query="")
+                if self._store is None or not hasattr(self._store, 'search') or not hasattr(self._store, 'delete'):
+                    logger.error("Store is not initialized or does not support required methods")
+                    return False
+                    
+                items = getattr(self._store, 'search')(namespace, query="")
                 
                 # Delete all items
                 for item in items:
-                    self._store.delete(namespace, item.key)
+                    if hasattr(item, 'key'):
+                        getattr(self._store, 'delete')(namespace, item.key)
                 
                 logger.info(f"Cleared session {session_id}")
                 return True
@@ -550,11 +583,15 @@ class LangGraphMemory(BaseMemory):
                 user_namespace = (soeid, "user_conversations")
                 
                 # Get all items in the user namespace
-                items = self._store.search(user_namespace, query="")
-                
-                # Delete all items
-                for item in items:
-                    self._store.delete(user_namespace, item.key)
+                if self._store is not None and hasattr(self._store, 'search') and hasattr(self._store, 'delete'):
+                    items = getattr(self._store, 'search')(user_namespace, query="")
+                    
+                    # Delete all items
+                    for item in items:
+                        if hasattr(item, 'key'):
+                            getattr(self._store, 'delete')(user_namespace, item.key)
+                else:
+                    logger.error("Store is not initialized or does not support required methods")
                 
                 logger.info(f"Cleared user history for SOEID {soeid}")
                 return True
@@ -578,9 +615,13 @@ class LangGraphMemory(BaseMemory):
             True if successful, False otherwise
         """
         try:
-            self._store.put(namespace, key, data)
-            logger.debug(f"Added long-term memory {key} to namespace {namespace}")
-            return True
+            if self._store is not None and hasattr(self._store, 'put'):
+                getattr(self._store, 'put')(namespace, key, data)
+                logger.debug(f"Added long-term memory {key} to namespace {namespace}")
+                return True
+            else:
+                logger.error("Store is not initialized or does not support put method")
+                return False
         except Exception as e:
             logger.error(f"Failed to add long-term memory: {str(e)}", exc_info=True)
             return False
@@ -596,25 +637,29 @@ class LangGraphMemory(BaseMemory):
             Memory data if found, None otherwise
         """
         try:
-            items = self._store.get(namespace, key)
-            if items:
-                # Handle both single item and list of items
-                if isinstance(items, list) and len(items) > 0:
-                    item = items[0]
-                else:
-                    item = items
-                
-                # Try different ways to access the value
-                if hasattr(item, 'value'):
-                    return item.value
-                elif hasattr(item, 'data'):
-                    return item.data
-                elif isinstance(item, dict):
-                    return item
-                else:
-                    # If it's a simple object, try to convert to dict
-                    return dict(item.__dict__) if hasattr(item, '__dict__') else None
-            return None
+            if self._store is not None and hasattr(self._store, 'get'):
+                items = getattr(self._store, 'get')(namespace, key)
+                if items:
+                    # Handle both single item and list of items
+                    if isinstance(items, list) and len(items) > 0:
+                        item = items[0]
+                    else:
+                        item = items
+                    
+                    # Try different ways to access the value
+                    if hasattr(item, 'value'):
+                        return getattr(item, 'value')
+                    elif hasattr(item, 'data'):
+                        return getattr(item, 'data')
+                    elif isinstance(item, dict):
+                        return item
+                    else:
+                        # If it's a simple object, try to convert to dict
+                        return dict(item.__dict__) if hasattr(item, '__dict__') else None
+                return None
+            else:
+                logger.error("Store is not initialized or does not support get method")
+                return None
         except Exception as e:
             logger.error(f"Failed to get long-term memory: {str(e)}", exc_info=True)
             return None
@@ -636,8 +681,8 @@ class LangGraphMemory(BaseMemory):
             List of matching memory items
         """
         try:
-            items = self._store.search(namespace, query=query, filter=filter_dict, limit=limit)
-            return [item.value for item in items]
+            items = getattr(self._store, 'search')(namespace, query=query, filter=filter_dict, limit=limit)
+            return [getattr(item, 'value', item) for item in items]
         except Exception as e:
             logger.error(f"Failed to search long-term memory: {str(e)}", exc_info=True)
-            return [] 
+            return []            

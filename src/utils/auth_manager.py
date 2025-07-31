@@ -15,6 +15,7 @@ from credentials import Credentials
 import vertexai
 
 from .token_service import TokenService, TokenConfig
+from src.rag.shared.utils.env_manager import env_manager
 
 logger = logging.getLogger(__name__)
 
@@ -55,10 +56,10 @@ class ServiceConfig:
         """Create ServiceConfig from environment variables."""
         return cls(
             service_name=service_name,
-            project_id=os.environ.get("PROJECT_ID"),
-            location=os.environ.get("VERTEXAI_LOCATION", "us-central1"),
-            api_endpoint=os.environ.get("VERTEXAI_API_ENDPOINT"),
-            api_transport=os.environ.get("VERTEXAI_API_TRANSPORT", "grpc")
+            project_id=env_manager.get("PROJECT_ID"),
+            location=env_manager.get("VERTEXAI_LOCATION", "us-central1"),
+            api_endpoint=env_manager.get("VERTEXAI_API_ENDPOINT"),
+            api_transport=env_manager.get("VERTEXAI_API_TRANSPORT", "grpc")
         )
 
 
