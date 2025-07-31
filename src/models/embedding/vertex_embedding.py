@@ -14,6 +14,7 @@ import vertexai
 
 from src.utils import UniversalAuthManager
 from src.rag.shared.utils.config_manager import ConfigManager
+from src.rag.shared.utils.env_manager import env_manager
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,7 @@ class VertexEmbeddingAI:
         
         # Use provided values or fall back to config, then to defaults
         self.model_name = model_name or embedding_config.get("model", "text-embedding-004")
-        self.project_id = project_id or os.environ.get("PROJECT_ID")
+        self.project_id = project_id or env_manager.get("PROJECT_ID")
         self.location = location or embedding_config.get("location", "us-central1")
         self.batch_size = batch_size or embedding_config.get("batch_size", 100)
         
@@ -83,7 +84,7 @@ class VertexEmbeddingAI:
                 vertexai.init(
                     project=self.project_id,
                     api_transport="rest",  # uses UAT PROJECT
-                    api_endpoint=os.environ.get("VERTEXAI_API_ENDPOINT"),  # uses R2D2 UAT
+                    api_endpoint=env_manager.get("VERTEXAI_API_ENDPOINT"),  # uses R2D2 UAT
                     credentials=credentials,
                 )
                 

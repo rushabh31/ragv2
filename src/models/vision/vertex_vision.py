@@ -15,6 +15,7 @@ from vertexai.generative_models import GenerativeModel, Content, Part, Image
 
 from src.utils.auth_manager import UniversalAuthManager
 from src.rag.shared.utils.config_manager import ConfigManager
+from src.rag.shared.utils.env_manager import env_manager
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,7 @@ class VertexVisionAI:
         
         # Use provided values or fall back to config, then to defaults
         self.model_name = model_name or vision_config.get("model", "gemini-1.5-pro-002")
-        self.project_id = project_id or os.environ.get("PROJECT_ID")
+        self.project_id = project_id or env_manager.get("PROJECT_ID")
         self.location = location or vision_config.get("location", "us-central1")
         self.max_pages = max_pages or vision_config.get("max_pages", 100)
         self.max_concurrent_pages = max_concurrent_pages or vision_config.get("max_concurrent_pages", 5)
@@ -122,9 +123,9 @@ class VertexVisionAI:
                 raise ValueError("Project ID is required. Set PROJECT_ID environment variable or pass project_id parameter.")
             
             # Set SSL certificate path if provided
-            ssl_cert_path = os.environ.get("SSL_CERT_FILE")
+            ssl_cert_path = env_manager.get("SSL_CERT_FILE")
             if ssl_cert_path:
-                os.environ["SSL_CERT_FILE"] = ssl_cert_path
+                env_manager.set("SSL_CERT_FILE", ssl_cert_path)
                 logger.info(f"Using SSL certificate from: {ssl_cert_path}")
             
             # Initialize Vertex AI with authenticated credentials
@@ -133,12 +134,12 @@ class VertexVisionAI:
                 project=self.project_id,
                 location=self.location,
                 api_transport="rest",  # uses UAT PROJECT
-                api_endpoint=os.environ.get("VERTEXAI_API_ENDPOINT"),  # uses R2D2 UAT
+                api_endpoint=env_manager.get("VERTEXAI_API_ENDPOINT"),  # uses R2D2 UAT
                 credentials=credentials
             )
             
             # Set metadata for user tracking
-            self.metadata = [("x-r2d2-user", os.getenv("USERNAME", ""))]
+            self.metadata = [("x-r2d2-user", env_manager.get("USERNAME", ""))]
             
             # Initialize the generative model
             self._model = GenerativeModel(self.model_name)

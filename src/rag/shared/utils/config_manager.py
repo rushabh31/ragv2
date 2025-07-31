@@ -1,10 +1,11 @@
 import os
 import yaml
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union
 import logging
 from pathlib import Path
 
 from src.rag.core.exceptions.exceptions import ConfigError
+from src.rag.shared.utils.env_manager import env_manager
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +21,7 @@ class ConfigManager:
             cls._instance._config = None
         return cls._instance
     
-    def load_config(self, config_path: Optional[str] = None) -> Dict[str, Any]:
+    def load_config(self, config_path: Optional[Union[str, Path]] = None) -> Dict[str, Any]:
         """Load configuration from a YAML file.
         
         Args:
@@ -34,7 +35,7 @@ class ConfigManager:
         """
         if config_path is None:
             # Check for CONFIG_PATH environment variable first
-            env_config_path = os.environ.get('CONFIG_PATH')
+            env_config_path = env_manager.get('CONFIG_PATH')
             if env_config_path:
                 config_path = Path(env_config_path)
             else:
@@ -54,7 +55,7 @@ class ConfigManager:
                 config_path = project_root / 'config' / 'config.yaml'
         
         try:
-            with open(config_path, 'r') as f:
+            with open(str(config_path), 'r') as f:
                 self._config = yaml.safe_load(f)
             
             # Process environment variables in the configuration
@@ -67,7 +68,7 @@ class ConfigManager:
             logger.error(error_msg)
             raise ConfigError(error_msg) from e
     
-    def get_config(self, reload: bool = False, config_path: Optional[str] = None) -> Dict[str, Any]:
+    def get_config(self, reload: bool = False, config_path: Optional[Union[str, Path]] = None) -> Dict[str, Any]:
         """Get the loaded configuration.
         
         Args:
@@ -84,7 +85,7 @@ class ConfigManager:
             return self.load_config(config_path=config_path)
         return self._config
     
-    def get_section(self, section_path: str, default: Any = None, config_path: Optional[str] = None) -> Any:
+    def get_section(self, section_path: str, default: Any = None, config_path: Optional[Union[str, Path]] = None) -> Any:
         """Get a specific section from the configuration using dot notation.
         
         Args:
@@ -109,7 +110,7 @@ class ConfigManager:
             logger.warning(f"Configuration section '{section_path}' not found, using default")
             return default
     
-    def update_section(self, section_path: str, value: Any, config_path: Optional[str] = None) -> None:
+    def update_section(self, section_path: str, value: Any, config_path: Optional[Union[str, Path]] = None) -> None:
         """Update a specific section in the configuration using dot notation.
         
         Args:
@@ -152,7 +153,7 @@ class ConfigManager:
                     self._process_env_vars(value)
                 elif isinstance(value, str) and value.startswith("${"): 
                     env_var = value.strip("${}") 
-                    env_value = os.environ.get(env_var)
+                    env_value = env_manager.get(env_var)
                     if env_value is not None:
                         logger.debug(f"Replacing config value with environment variable {env_var}")
                         config_section[key] = env_value
@@ -164,7 +165,7 @@ class ConfigManager:
                     self._process_env_vars(item)
                 elif isinstance(item, str) and item.startswith("${"):
                     env_var = item.strip("${}")
-                    env_value = os.environ.get(env_var)
+                    env_value = env_manager.get(env_var)
                     if env_value is not None:
                         logger.debug(f"Replacing config value with environment variable {env_var}")
                         config_section[i] = env_value

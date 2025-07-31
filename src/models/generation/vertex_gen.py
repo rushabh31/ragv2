@@ -14,6 +14,7 @@ import vertexai
 
 from src.utils import UniversalAuthManager
 from src.rag.shared.utils.config_manager import ConfigManager
+from src.rag.shared.utils.env_manager import env_manager
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,7 @@ class VertexGenAI:
         
         # Use provided values or fall back to config, then to defaults
         self.model_name = model_name or generation_config.get("model", "gemini-1.5-pro-002")
-        self.project_id = project_id or os.environ.get("PROJECT_ID")
+        self.project_id = project_id or env_manager.get("PROJECT_ID")
         self.location = location or generation_config.get("location", "us-central1")
         self.temperature = temperature or generation_config.get("temperature", 0.2)
         self.max_output_tokens = max_output_tokens or generation_config.get("max_output_tokens", 1024)
@@ -86,12 +87,12 @@ class VertexGenAI:
                 vertexai.init(
                     project=self.project_id,
                     api_transport="rest",  # uses UAT PROJECT
-                    api_endpoint=os.environ.get("VERTEXAI_API_ENDPOINT"),  # uses R2D2 UAT
+                    api_endpoint=env_manager.get("VERTEXAI_API_ENDPOINT"),  # uses R2D2 UAT
                     credentials=credentials,
                 )
                 
                 # Set metadata for user tracking
-                self.metadata = [("x-r2d2-user", os.getenv("USERNAME", ""))]
+                self.metadata = [("x-r2d2-user", env_manager.get("USERNAME", ""))]
                 
                 # Initialize the generative model
                 self._model = GenerativeModel(self.model_name)
@@ -316,7 +317,7 @@ async def example_usage():
     """Example of how to use VertexGenAI."""
     
     # Set environment variables for testing
-    os.environ["REQUESTS_CA_BUNDLE"] = "<Path to PROD CA pem files>"
+    env_manager.set("REQUESTS_CA_BUNDLE", "<Path to PROD CA pem files>")
     
     # Initialize client
     vertex_gen_ai = VertexGenAI()

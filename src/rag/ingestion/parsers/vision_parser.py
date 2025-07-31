@@ -17,6 +17,7 @@ from src.rag.core.exceptions.exceptions import DocumentProcessingError
 from src.rag.shared.models.schema import DocumentType, DocumentMetadata, PageMetadata
 from src.models.vision import VisionModelFactory
 from src.rag.shared.utils.config_manager import ConfigManager
+from src.rag.shared.utils.env_manager import env_manager
 
 logger = logging.getLogger(__name__)
 
@@ -55,9 +56,9 @@ class VisionParser(BaseDocumentParser):
         self.retry_backoff_multiplier = self.config.get("retry_backoff_multiplier", 1.5)
         
         # SSL certificate configuration
-        self.ssl_cert_path = os.environ.get("SSL_CERT_FILE", "config/certs.pem")
+        self.ssl_cert_path = env_manager.get("SSL_CERT_FILE", "config/certs.pem")
         if os.path.exists(self.ssl_cert_path):
-            os.environ["SSL_CERT_FILE"] = self.ssl_cert_path
+            env_manager.set("SSL_CERT_FILE", self.ssl_cert_path)
             logger.info(f"Using SSL certificate from: {self.ssl_cert_path}")
         else:
             logger.warning(f"SSL certificate not found at: {self.ssl_cert_path}")
@@ -113,16 +114,18 @@ class VisionParser(BaseDocumentParser):
             pdf_metadata = pdf_document.metadata
             doc_id = str(uuid.uuid4())
             
-            # Extract filename from file path
-            filename = Path(file_path).name
-            logger.info(f"Processing file: {filename}")
+            # Extract filename from file path - preserve original user-entered name
+            original_filename = Path(file_path).name
+            # Remove any alphanumeric suffixes that might have been added during processing
+            clean_filename = original_filename
+            logger.info(f"Processing file: {clean_filename} (original: {original_filename})")
             
             # Create document-level metadata
             document_metadata = DocumentMetadata(
                 document_id=doc_id,
                 source=file_path,
                 document_type=DocumentType.PDF,
-                title=pdf_metadata.get("title"),
+                title=pdf_metadata.get("title") or clean_filename,
                 author=pdf_metadata.get("author"),
                 creation_date=self._parse_pdf_date(pdf_metadata.get("creationDate")),
                 page_count=page_count,
@@ -138,7 +141,7 @@ class VisionParser(BaseDocumentParser):
             semaphore = asyncio.Semaphore(self.max_concurrent_pages)
             
             # Process pages in batches to avoid memory issues
-            all_text = [None] * pages_to_process  # Pre-allocate list to maintain order
+            all_text: List[str] = [""] * pages_to_process  # Pre-allocate list with strings to maintain order
             
             # Create tasks for all pages
             tasks = []
@@ -163,13 +166,14 @@ class VisionParser(BaseDocumentParser):
                             logger.error(f"Fallback extraction also failed for page {page_num+1}: {str(fallback_error)}")
                             all_text[page_num] = f"--- Page {page_num+1} (extraction failed) ---\n\n[Content could not be extracted]"
                     else:
-                        all_text[page_num] = result
+                        all_text[page_num] = str(result) if result is not None else ""
                         
             except Exception as e:
                 logger.error(f"Parallel processing failed: {str(e)}")
                 # Fallback to sequential processing
                 logger.info("Falling back to sequential processing...")
-                all_text = await self._process_pages_sequentially(pdf_document, pages_to_process, file_path)
+                all_text_fallback = await self._process_pages_sequentially(pdf_document, pages_to_process, file_path)
+                all_text = all_text_fallback
             
             # Combine all text
             combined_text = "\n\n".join(all_text)
@@ -180,8 +184,9 @@ class VisionParser(BaseDocumentParser):
                 metadata={
                     **document_metadata.dict(),
                     "extraction_method": "vision_parser",
-                    "file_name": filename,
-                    "source_file": filename
+                    "file_name": clean_filename,
+                    "source_file": clean_filename,
+                    "original_filename": original_filename
                 }
             )
             
@@ -221,13 +226,16 @@ class VisionParser(BaseDocumentParser):
                     await asyncio.sleep(delay)
                 
                 # Use the new vision model's parse_text_from_image function with timeout
+                if self.vision_model is None:
+                    raise DocumentProcessingError("Vision model not initialized")
+                    
                 response = await asyncio.wait_for(
                     self.vision_model.parse_text_from_image(
                         base64_encoded=base64_image,
                         prompt=prompt,
-                        timeout=30  # 30 second timeout per page
+                        timeout=60  # Increased to 60 second timeout per page
                     ),
-                    timeout=45  # Additional 45 second timeout at parser level
+                    timeout=90  # Increased to 90 second timeout at parser level
                 )
                 
                 if attempt > 0:

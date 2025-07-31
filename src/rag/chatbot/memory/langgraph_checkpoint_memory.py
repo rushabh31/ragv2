@@ -43,6 +43,7 @@ except ImportError:
 
 from src.rag.chatbot.memory.base_memory import BaseMemory
 from src.rag.core.exceptions.exceptions import MemoryError
+from src.rag.shared.utils.env_manager import env_manager
 
 logger = logging.getLogger(__name__)
 
@@ -56,13 +57,13 @@ class LangGraphCheckpointMemory(BaseMemory):
     - Support for both in-memory and PostgreSQL storage
     """
     
-    def __init__(self, config: Dict[str, Any] = None):
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
         """Initialize the LangGraph checkpoint memory system.
         
         Args:
             config: Configuration dictionary for the memory system
         """
-        super().__init__(config)
+        super().__init__(config or {})
         
         # Check if LangGraph checkpoint is available
         if not LANGGRAPH_CHECKPOINT_AVAILABLE:
@@ -89,7 +90,7 @@ class LangGraphCheckpointMemory(BaseMemory):
         
         logger.info(f"LangGraph checkpoint memory system initialized with {self._store_type} storage")
     
-    def _init_checkpointer(self) -> BaseCheckpointSaver:
+    def _init_checkpointer(self) -> Optional[object]:
         """Initialize the appropriate LangGraph checkpointer.
         
         Returns:
@@ -97,11 +98,15 @@ class LangGraphCheckpointMemory(BaseMemory):
         """
         try:
             if self._store_type == "in_memory":
+                if InMemorySaver is None:
+                    raise MemoryError("InMemorySaver is not available")
                 return InMemorySaver()
             elif self._store_type == "postgres":
                 if not POSTGRES_CHECKPOINT_AVAILABLE:
                     logger.warning("PostgreSQL checkpointer is not available. Falling back to in-memory checkpointer.")
                     self._store_type = "in_memory"
+                    if InMemorySaver is None:
+                        raise MemoryError("InMemorySaver is not available")
                     return InMemorySaver()
                 
                 # Get PostgreSQL connection string
@@ -114,6 +119,9 @@ class LangGraphCheckpointMemory(BaseMemory):
                 self._postgres_connection_string = connection_string
                 
                 # Test the connection and set up schema
+                if PostgresSaver is None:
+                    raise MemoryError("PostgresSaver is not available")
+                    
                 with PostgresSaver.from_conn_string(connection_string) as postgres_saver:
                     try:
                         postgres_saver.setup()
@@ -134,7 +142,7 @@ class LangGraphCheckpointMemory(BaseMemory):
             logger.error(error_msg)
             raise MemoryError(error_msg) from e
     
-    def _init_store(self) -> Optional[BaseStore]:
+    def _init_store(self) -> Optional[object]:
         """Initialize the appropriate LangGraph store for long-term memory.
         
         Returns:
@@ -155,15 +163,17 @@ class LangGraphCheckpointMemory(BaseMemory):
             logger.warning(f"Failed to initialize store for long-term memory: {str(e)}")
             return None
     
-    def _init_in_memory_store(self) -> InMemoryStore:
+    def _init_in_memory_store(self) -> Optional[object]:
         """Initialize in-memory store for long-term memory.
         
         Returns:
             InMemoryStore: The in-memory store
         """
+        if InMemoryStore is None:
+            return None
         return InMemoryStore()
     
-    def _init_postgres_store(self) -> PostgresStore:
+    def _init_postgres_store(self) -> Optional[object]:
         """Initialize PostgreSQL store for long-term memory.
         
         Returns:
@@ -173,6 +183,8 @@ class LangGraphCheckpointMemory(BaseMemory):
         if not connection_string:
             raise MemoryError("PostgreSQL connection string is required for postgres store type")
         
+        if PostgresStore is None:
+            return None
         return PostgresStore.from_conn_string(connection_string)
     
     async def _get_thread_config(self, session_id: str) -> Dict[str, Any]:
@@ -262,10 +274,17 @@ class LangGraphCheckpointMemory(BaseMemory):
             
             # Store the checkpoint using sync method with context manager
             if self._store_type == "postgres":
+                if PostgresSaver is None:
+                    logger.error("PostgresSaver is not available")
+                    return False
                 with PostgresSaver.from_conn_string(self._postgres_connection_string) as checkpointer:
-                    checkpointer.put(config, checkpoint_data, {}, {})
+                    if hasattr(checkpointer, 'put'):
+                        getattr(checkpointer, 'put')(config, checkpoint_data, {}, {})
             else:
-                self._checkpointer.put(config, checkpoint_data, {}, {})
+                if self._checkpointer is None or not hasattr(self._checkpointer, 'put'):
+                    logger.error("Checkpointer is not initialized or does not support put method")
+                    return False
+                getattr(self._checkpointer, 'put')(config, checkpoint_data, {}, {})
             
             # Also store in a simple format for reliable retrieval
             if not hasattr(self, '_simple_storage'):
@@ -309,10 +328,20 @@ class LangGraphCheckpointMemory(BaseMemory):
             
             # Use context manager for PostgreSQL
             if self._store_type == "postgres":
+                if PostgresSaver is None:
+                    logger.error("PostgresSaver is not available")
+                    return []
                 with PostgresSaver.from_conn_string(self._postgres_connection_string) as checkpointer:
-                    checkpoint = checkpointer.get(config)
+                    if hasattr(checkpointer, 'get'):
+                        checkpoint = getattr(checkpointer, 'get')(config)
+                    else:
+                        logger.error("PostgresSaver does not support get method")
+                        return []
             else:
-                checkpoint = self._checkpointer.get(config)
+                if self._checkpointer is None or not hasattr(self._checkpointer, 'get'):
+                    logger.error("Checkpointer is not initialized or does not support get method")
+                    return []
+                checkpoint = getattr(self._checkpointer, 'get')(config)
             logger.debug(f"Retrieved checkpoint: {checkpoint}")
             
             if not checkpoint:
@@ -531,11 +560,11 @@ class LangGraphCheckpointMemory(BaseMemory):
             return False
     
     async def add(self, 
-                  session_id: str = None,
-                  user_id: str = None,
-                  messages: List[Dict[str, str]] = None,
-                  query: str = None, 
-                  response: str = None, 
+                  session_id: Optional[str] = None,
+                  user_id: Optional[str] = None,
+                  messages: Optional[List[Dict[str, str]]] = None,
+                  query: Optional[str] = None, 
+                  response: Optional[str] = None, 
                   metadata: Optional[Dict[str, Any]] = None) -> bool:
         """Add messages to the conversation memory.
         
@@ -574,7 +603,9 @@ class LangGraphCheckpointMemory(BaseMemory):
                         role = message.get("role", "user")
                         content = message.get("content", "")
                         msg_metadata = dict(metadata) if metadata else {}
-                        msg_metadata.update(message.get("metadata", {}))
+                        msg_meta = message.get("metadata", {})
+                        if isinstance(msg_meta, dict):
+                            msg_metadata.update(msg_meta)
                         
                         result = await self._add_message_to_checkpoint(
                             session_id, role, content, msg_metadata
@@ -754,10 +785,13 @@ class LangGraphCheckpointMemory(BaseMemory):
                 # Delete thread from checkpointer
                 config = await self._get_thread_config(session_id)
                 if self._store_type == "postgres":
-                    with PostgresSaver.from_conn_string(self._postgres_connection_string) as checkpointer:
-                        checkpointer.delete_thread(config["configurable"]["thread_id"])
+                    if PostgresSaver is not None:
+                        with PostgresSaver.from_conn_string(self._postgres_connection_string) as checkpointer:
+                            if hasattr(checkpointer, 'delete_thread'):
+                                checkpointer.delete_thread(config["configurable"]["thread_id"])
                 else:
-                    self._checkpointer.delete_thread(config["configurable"]["thread_id"])
+                    if self._checkpointer is not None and hasattr(self._checkpointer, 'delete_thread'):
+                        getattr(self._checkpointer, 'delete_thread')(config["configurable"]["thread_id"])
                 
                 # Remove from session tracking
                 if session_id in self._sessions:
@@ -827,9 +861,13 @@ class LangGraphCheckpointMemory(BaseMemory):
             return False
         
         try:
-            self._store.put(namespace, key, data)
-            logger.debug(f"Added long-term memory {key} to namespace {namespace}")
-            return True
+            if self._store is not None and hasattr(self._store, 'put'):
+                getattr(self._store, 'put')(namespace, key, data)
+                logger.debug(f"Added long-term memory {key} to namespace {namespace}")
+                return True
+            else:
+                logger.error("Store is not initialized or does not support put method")
+                return False
         except Exception as e:
             logger.error(f"Failed to add long-term memory: {str(e)}", exc_info=True)
             return False
@@ -849,22 +887,26 @@ class LangGraphCheckpointMemory(BaseMemory):
             return None
         
         try:
-            items = self._store.get(namespace, key)
-            if items:
-                if isinstance(items, list) and len(items) > 0:
-                    item = items[0]
-                else:
-                    item = items
-                
-                if hasattr(item, 'value'):
-                    return item.value
-                elif hasattr(item, 'data'):
-                    return item.data
-                elif isinstance(item, dict):
-                    return item
-                else:
-                    return dict(item.__dict__) if hasattr(item, '__dict__') else None
-            return None
+            if self._store is not None and hasattr(self._store, 'get'):
+                items = getattr(self._store, 'get')(namespace, key)
+                if items:
+                    if isinstance(items, list) and len(items) > 0:
+                        item = items[0]
+                    else:
+                        item = items
+                    
+                    if hasattr(item, 'value'):
+                        return getattr(item, 'value')
+                    elif hasattr(item, 'data'):
+                        return getattr(item, 'data')
+                    elif isinstance(item, dict):
+                        return item
+                    else:
+                        return dict(item.__dict__) if hasattr(item, '__dict__') else None
+                return None
+            else:
+                logger.error("Store is not initialized or does not support get method")
+                return None
         except Exception as e:
             logger.error(f"Failed to get long-term memory: {str(e)}", exc_info=True)
             return None
@@ -890,8 +932,12 @@ class LangGraphCheckpointMemory(BaseMemory):
             return []
         
         try:
-            items = self._store.search(namespace, query=query, filter=filter_dict, limit=limit)
-            return [item.value for item in items]
+            if self._store is not None and hasattr(self._store, 'search'):
+                items = getattr(self._store, 'search')(namespace, query=query, filter=filter_dict, limit=limit)
+                return [getattr(item, 'value', item) for item in items]
+            else:
+                logger.error("Store is not initialized or does not support search method")
+                return []
         except Exception as e:
             logger.error(f"Failed to search long-term memory: {str(e)}", exc_info=True)
             return []
