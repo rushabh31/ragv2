@@ -48,7 +48,9 @@ class VertexEmbeddingAI:
         
         # Use provided values or fall back to config, then to defaults
         self.model_name = model_name or embedding_config.get("model", "text-embedding-004")
-        self.project_id = project_id or os.environ.get("PROJECT_ID")
+        # Use environment manager for configuration
+        from src.utils.env_manager import env
+        self.project_id = project_id or env.get_string("PROJECT_ID")
         self.location = location or embedding_config.get("location", "us-central1")
         self.batch_size = batch_size or embedding_config.get("batch_size", 100)
         
@@ -83,7 +85,7 @@ class VertexEmbeddingAI:
                 vertexai.init(
                     project=self.project_id,
                     api_transport="rest",  # uses UAT PROJECT
-                    api_endpoint=os.environ.get("VERTEXAI_API_ENDPOINT"),  # uses R2D2 UAT
+                    api_endpoint=env.get_string("VERTEXAI_API_ENDPOINT"),  # uses R2D2 UAT
                     credentials=credentials,
                 )
                 

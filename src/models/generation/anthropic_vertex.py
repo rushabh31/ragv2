@@ -45,7 +45,9 @@ class AnthropicVertexGenAI:
         """
         self.model_name = model_name
         self.region = region
-        self.project_id = project_id or os.environ.get("PROJECT_ID")
+        # Use environment manager for configuration
+        from src.utils.env_manager import env
+        self.project_id = project_id or env.get_string("PROJECT_ID")
         self._client = None
         self._auth_manager = UniversalAuthManager(f"anthropic_vertex_{model_name}")
         self._auth_manager.configure()

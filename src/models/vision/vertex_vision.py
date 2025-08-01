@@ -47,7 +47,9 @@ class VertexVisionAI:
         
         # Use provided values or fall back to config, then to defaults
         self.model_name = model_name or vision_config.get("model", "gemini-1.5-pro-002")
-        self.project_id = project_id or os.environ.get("PROJECT_ID")
+        # Use environment manager for configuration
+        from src.utils.env_manager import env
+        self.project_id = project_id or env.get_string("PROJECT_ID")
         self.location = location or vision_config.get("location", "us-central1")
         self.max_pages = max_pages or vision_config.get("max_pages", 100)
         self.max_concurrent_pages = max_concurrent_pages or vision_config.get("max_concurrent_pages", 5)
@@ -122,9 +124,9 @@ class VertexVisionAI:
                 raise ValueError("Project ID is required. Set PROJECT_ID environment variable or pass project_id parameter.")
             
             # Set SSL certificate path if provided
-            ssl_cert_path = os.environ.get("SSL_CERT_FILE")
+            ssl_cert_path = env.get_string("SSL_CERT_FILE")
             if ssl_cert_path:
-                os.environ["SSL_CERT_FILE"] = ssl_cert_path
+                env.set("SSL_CERT_FILE", ssl_cert_path)
                 logger.info(f"Using SSL certificate from: {ssl_cert_path}")
             
             # Initialize Vertex AI with authenticated credentials
@@ -133,7 +135,7 @@ class VertexVisionAI:
                 project=self.project_id,
                 location=self.location,
                 api_transport="rest",  # uses UAT PROJECT
-                api_endpoint=os.environ.get("VERTEXAI_API_ENDPOINT"),  # uses R2D2 UAT
+                api_endpoint=env.get_string("VERTEXAI_API_ENDPOINT"),  # uses R2D2 UAT
                 credentials=credentials
             )
             

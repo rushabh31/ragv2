@@ -36,15 +36,18 @@ class TokenConfig:
     @classmethod
     def from_env(cls) -> 'TokenConfig':
         """Create TokenConfig from environment variables."""
+        # Use environment manager for configuration
+        from src.utils.env_manager import env
+        
         return cls(
-            endpoint_url=os.environ.get("COIN_CONSUMER_ENDPOINT_URL", ""),
-            client_id=os.environ.get("COIN_CONSUMER_CLIENT_ID", ""),
-            client_secret=os.environ.get("COIN_CONSUMER_CLIENT_SECRET", ""),
-            scope=os.environ.get("COIN_CONSUMER_SCOPE", ""),
-            timeout=int(os.environ.get("TOKEN_REQUEST_TIMEOUT", "10")),
-            verify_ssl=os.environ.get("TOKEN_VERIFY_SSL", "false").lower() == "true",
-            max_retries=int(os.environ.get("TOKEN_MAX_RETRIES", "3")),
-            backoff_factor=float(os.environ.get("TOKEN_BACKOFF_FACTOR", "0.3"))
+            endpoint_url=env.get_string("COIN_CONSUMER_ENDPOINT_URL", ""),
+            client_id=env.get_string("COIN_CONSUMER_CLIENT_ID", ""),
+            client_secret=env.get_string("COIN_CONSUMER_CLIENT_SECRET", ""),
+            scope=env.get_string("COIN_CONSUMER_SCOPE", ""),
+            timeout=env.get_int("TOKEN_REQUEST_TIMEOUT", 10),
+            verify_ssl=env.get_bool("TOKEN_VERIFY_SSL", False),
+            max_retries=env.get_int("TOKEN_MAX_RETRIES", 3),
+            backoff_factor=env.get_float("TOKEN_BACKOFF_FACTOR", 0.3)
         )
 
 

@@ -13,6 +13,7 @@ from pathlib import Path
 
 from src.rag.ingestion.parsers.base_parser import BaseDocumentParser
 from src.rag.core.interfaces.base import Document
+from src.utils.env_manager import env
 from src.rag.core.exceptions.exceptions import DocumentProcessingError
 from src.rag.shared.models.schema import DocumentType, DocumentMetadata, PageMetadata
 from src.models.vision import VisionModelFactory
@@ -55,9 +56,9 @@ class VisionParser(BaseDocumentParser):
         self.retry_backoff_multiplier = self.config.get("retry_backoff_multiplier", 1.5)
         
         # SSL certificate configuration
-        self.ssl_cert_path = os.environ.get("SSL_CERT_FILE", "config/certs.pem")
-        if os.path.exists(self.ssl_cert_path):
-            os.environ["SSL_CERT_FILE"] = self.ssl_cert_path
+        self.ssl_cert_path = env.get_string("SSL_CERT_FILE", "config/certs.pem")
+        if self.ssl_cert_path:
+            env.set("SSL_CERT_FILE", self.ssl_cert_path)
             logger.info(f"Using SSL certificate from: {self.ssl_cert_path}")
         else:
             logger.warning(f"SSL certificate not found at: {self.ssl_cert_path}")

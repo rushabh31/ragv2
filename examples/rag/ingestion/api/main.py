@@ -138,8 +138,11 @@ async def health_check():
     return {"status": "ok", "service": "ingestion-api"}
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    log_level = os.environ.get("LOG_LEVEL", "info").lower()
+    # Use environment manager for configuration
+    from src.utils.env_manager import env
+    
+    port = env.get_int("PORT", 8000)
+    log_level = env.get_string("LOG_LEVEL", "info").lower()
     
     uvicorn.run(
         "main:app",

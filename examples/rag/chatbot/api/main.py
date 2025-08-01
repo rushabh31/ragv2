@@ -140,8 +140,11 @@ async def health_check():
 
 def main():
     """Entry point for the chatbot API server."""
-    port = int(os.environ.get("PORT", 8001))
-    log_level = os.environ.get("LOG_LEVEL", "info").lower()
+    # Use environment manager for configuration
+    from src.utils.env_manager import env
+    
+    port = env.get_int("PORT", 8001)
+    log_level = env.get_string("LOG_LEVEL", "info").lower()
     
     uvicorn.run(
         "examples.rag.chatbot.api.main:app",

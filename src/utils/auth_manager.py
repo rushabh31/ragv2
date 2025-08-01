@@ -53,12 +53,15 @@ class ServiceConfig:
     @classmethod
     def from_env(cls, service_name: str) -> 'ServiceConfig':
         """Create ServiceConfig from environment variables."""
+        # Use environment manager for configuration
+        from src.utils.env_manager import env
+        
         return cls(
             service_name=service_name,
-            project_id=os.environ.get("PROJECT_ID"),
-            location=os.environ.get("VERTEXAI_LOCATION", "us-central1"),
-            api_endpoint=os.environ.get("VERTEXAI_API_ENDPOINT"),
-            api_transport=os.environ.get("VERTEXAI_API_TRANSPORT", "grpc")
+            project_id=env.get_string("PROJECT_ID"),
+            location=env.get_string("VERTEXAI_LOCATION", "us-central1"),
+            api_endpoint=env.get_string("VERTEXAI_API_ENDPOINT"),
+            api_transport=env.get_string("VERTEXAI_API_TRANSPORT", "grpc")
         )
 
 

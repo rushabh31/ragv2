@@ -34,7 +34,9 @@ class ConfigManager:
         """
         if config_path is None:
             # Check for CONFIG_PATH environment variable first
-            env_config_path = os.environ.get('CONFIG_PATH')
+            # Use environment manager for configuration
+            from src.utils.env_manager import env
+            env_config_path = env.get_string('CONFIG_PATH')
             if env_config_path:
                 config_path = Path(env_config_path)
             else:
@@ -152,7 +154,7 @@ class ConfigManager:
                     self._process_env_vars(value)
                 elif isinstance(value, str) and value.startswith("${"): 
                     env_var = value.strip("${}") 
-                    env_value = os.environ.get(env_var)
+                    env_value = env.get_string(env_var)
                     if env_value is not None:
                         logger.debug(f"Replacing config value with environment variable {env_var}")
                         config_section[key] = env_value
@@ -164,7 +166,7 @@ class ConfigManager:
                     self._process_env_vars(item)
                 elif isinstance(item, str) and item.startswith("${"):
                     env_var = item.strip("${}")
-                    env_value = os.environ.get(env_var)
+                    env_value = env.get_string(env_var)
                     if env_value is not None:
                         logger.debug(f"Replacing config value with environment variable {env_var}")
                         config_section[i] = env_value

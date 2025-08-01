@@ -4,6 +4,8 @@ from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 import asyncio
 
+# Import environment manager for configuration
+from src.utils.env_manager import env
 from src.rag.shared.utils.config_manager import ConfigManager
 from src.rag.core.exceptions.exceptions import GenerationError, RetrievalError, RerankerError
 from src.rag.chatbot.retrievers.vector_retriever import VectorRetriever

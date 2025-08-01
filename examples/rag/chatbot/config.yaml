@@ -46,7 +46,7 @@ chatbot:
 
   # Memory Configuration
   memory:
-    type: "langgraph_checkpoint"  # Options: "simple", "mem0", "langgraph", "langgraph_checkpoint"
+    type: "advanced_langgraph_checkpoint"  # Options: "simple", "mem0", "langgraph", "langgraph_checkpoint"
     max_history: 10               # Maximum conversation history length
     store_type: "postgres"        # Options: "in_memory", "postgres"
     postgres:

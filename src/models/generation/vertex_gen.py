@@ -52,7 +52,9 @@ class VertexGenAI:
         
         # Use provided values or fall back to config, then to defaults
         self.model_name = model_name or generation_config.get("model", "gemini-1.5-pro-002")
-        self.project_id = project_id or os.environ.get("PROJECT_ID")
+        # Use environment manager for configuration
+        from src.utils.env_manager import env
+        self.project_id = project_id or env.get_string("PROJECT_ID")
         self.location = location or generation_config.get("location", "us-central1")
         self.temperature = temperature or generation_config.get("temperature", 0.2)
         self.max_output_tokens = max_output_tokens or generation_config.get("max_output_tokens", 1024)
@@ -86,7 +88,7 @@ class VertexGenAI:
                 vertexai.init(
                     project=self.project_id,
                     api_transport="rest",  # uses UAT PROJECT
-                    api_endpoint=os.environ.get("VERTEXAI_API_ENDPOINT"),  # uses R2D2 UAT
+                    api_endpoint=env.get_string("VERTEXAI_API_ENDPOINT"),  # uses R2D2 UAT
                     credentials=credentials,
                 )
                 
