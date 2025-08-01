@@ -120,6 +120,9 @@ class PgVectorStore(BaseVectorStore):
                     content TEXT NOT NULL,
                     metadata JSONB,
                     embedding vector({self.dimension}),
+                    base64_image TEXT,
+                    image_width INTEGER,
+                    image_height INTEGER,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     page_number INTEGER,
                     file_name TEXT,
@@ -275,6 +278,11 @@ class PgVectorStore(BaseVectorStore):
                         document_id = chunk.metadata.get('document_id') if chunk.metadata else None
                         chunk_index = chunk.metadata.get('chunk_index') if chunk.metadata else None
                         
+                        # Extract image data from metadata
+                        base64_image = chunk.metadata.get('base64_image') if chunk.metadata else None
+                        image_width = chunk.metadata.get('image_width') if chunk.metadata else None
+                        image_height = chunk.metadata.get('image_height') if chunk.metadata else None
+                        
                         # Convert embedding list to string format for pgvector
                         embedding_str = '[' + ','.join(map(str, embedding)) + ']'
                         
@@ -283,8 +291,10 @@ class PgVectorStore(BaseVectorStore):
                             text(f'''
                                 INSERT INTO {self.qualified_table_name} 
                                 (chunk_id, soeid, session_id, content, metadata, embedding, 
+                                 base64_image, image_width, image_height,
                                  page_number, file_name, document_id, chunk_index, created_at)
                                 VALUES (:chunk_id, :soeid, :session_id, :content, :metadata, :embedding::vector, 
+                                        :base64_image, :image_width, :image_height,
                                         :page_number, :file_name, :document_id, :chunk_index, CURRENT_TIMESTAMP)
                                 ON CONFLICT (chunk_id)
                                 DO UPDATE SET
@@ -293,6 +303,9 @@ class PgVectorStore(BaseVectorStore):
                                     content = EXCLUDED.content,
                                     metadata = EXCLUDED.metadata,
                                     embedding = EXCLUDED.embedding,
+                                    base64_image = EXCLUDED.base64_image,
+                                    image_width = EXCLUDED.image_width,
+                                    image_height = EXCLUDED.image_height,
                                     page_number = EXCLUDED.page_number,
                                     file_name = EXCLUDED.file_name,
                                     document_id = EXCLUDED.document_id,
@@ -306,6 +319,9 @@ class PgVectorStore(BaseVectorStore):
                                 'content': chunk.content,
                                 'metadata': metadata_json,
                                 'embedding': embedding_str,
+                                'base64_image': base64_image,
+                                'image_width': image_width,
+                                'image_height': image_height,
                                 'page_number': page_number,
                                 'file_name': file_name,
                                 'document_id': document_id,
@@ -377,7 +393,7 @@ class PgVectorStore(BaseVectorStore):
             async with self.async_session_factory() as session:
                 result = await session.execute(
                     text(f'''
-                        SELECT chunk_id, content, metadata, 
+                        SELECT chunk_id, content, metadata, base64_image, image_width, image_height,
                                1 - (embedding <=> :embedding::vector) AS similarity
                         FROM {self.qualified_table_name}
                         ORDER BY similarity DESC
@@ -395,6 +411,9 @@ class PgVectorStore(BaseVectorStore):
                 chunk_id = row['chunk_id']
                 content = row['content']
                 metadata = row['metadata']
+                base64_image = row['base64_image']
+                image_width = row['image_width']
+                image_height = row['image_height']
                 similarity = float(row['similarity'])
 
                 # Ensure metadata is a dictionary
@@ -406,6 +425,12 @@ class PgVectorStore(BaseVectorStore):
                         metadata = {}
                 elif metadata is None:
                     metadata = {}
+                
+                # Add image data to metadata if available
+                if base64_image:
+                    metadata['base64_image'] = base64_image
+                    metadata['image_width'] = image_width
+                    metadata['image_height'] = image_height
                 
                 # Create search result
                 search_result = SearchResult(

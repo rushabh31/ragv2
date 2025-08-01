@@ -152,6 +152,7 @@ class VisionParser(BaseDocumentParser):
                 results = await asyncio.gather(*tasks, return_exceptions=True)
                 
                 # Process results and maintain page order
+                page_data_list = []  # Store page data with images
                 for page_num, result in enumerate(results):
                     if isinstance(result, Exception):
                         logger.error(f"Page {page_num+1} processing failed: {str(result)}")
@@ -159,12 +160,42 @@ class VisionParser(BaseDocumentParser):
                         try:
                             page = pdf_document[page_num]
                             fallback_text = page.get_text()
-                            all_text[page_num] = f"--- Page {page_num+1} (fallback extraction) ---\n\n{fallback_text}"
+                            fallback_page_data = {
+                                'text': f"--- Page {page_num+1} (fallback extraction) ---\n\n{fallback_text}",
+                                'base64_image': None,
+                                'image_width': None,
+                                'image_height': None,
+                                'page_number': page_num + 1
+                            }
+                            all_text[page_num] = fallback_page_data['text']
+                            page_data_list.append(fallback_page_data)
                         except Exception as fallback_error:
                             logger.error(f"Fallback extraction also failed for page {page_num+1}: {str(fallback_error)}")
-                            all_text[page_num] = f"--- Page {page_num+1} (extraction failed) ---\n\n[Content could not be extracted]"
+                            error_page_data = {
+                                'text': f"--- Page {page_num+1} (extraction failed) ---\n\n[Content could not be extracted]",
+                                'base64_image': None,
+                                'image_width': None,
+                                'image_height': None,
+                                'page_number': page_num + 1
+                            }
+                            all_text[page_num] = error_page_data['text']
+                            page_data_list.append(error_page_data)
                     else:
-                        all_text[page_num] = result
+                        # Result is now a page data dictionary
+                        if isinstance(result, dict) and 'text' in result:
+                            all_text[page_num] = result['text']
+                            page_data_list.append(result)
+                        else:
+                            # Handle legacy string format
+                            all_text[page_num] = result
+                            legacy_page_data = {
+                                'text': result,
+                                'base64_image': None,
+                                'image_width': None,
+                                'image_height': None,
+                                'page_number': page_num + 1
+                            }
+                            page_data_list.append(legacy_page_data)
                         
             except Exception as e:
                 logger.error(f"Parallel processing failed: {str(e)}")
@@ -175,18 +206,45 @@ class VisionParser(BaseDocumentParser):
             # Combine all text
             combined_text = "\n\n".join(all_text)
             
-            # Create a single document with all pages
-            doc = Document(
+            # Create documents with page-level image data
+            documents = []
+            
+            # Create a document for each page with its image data
+            for page_data in page_data_list:
+                page_metadata = {
+                    **document_metadata.dict(),
+                    "extraction_method": "vision_parser",
+                    "file_name": filename,
+                    "source_file": filename,
+                    "page_number": page_data['page_number']
+                }
+                
+                # Add image data to metadata if available
+                if page_data['base64_image']:
+                    page_metadata['base64_image'] = page_data['base64_image']
+                    page_metadata['image_width'] = page_data['image_width']
+                    page_metadata['image_height'] = page_data['image_height']
+                
+                page_doc = Document(
+                    content=page_data['text'],
+                    metadata=page_metadata
+                )
+                documents.append(page_doc)
+            
+            # Also create a combined document for backward compatibility
+            combined_doc = Document(
                 content=combined_text,
                 metadata={
                     **document_metadata.dict(),
                     "extraction_method": "vision_parser",
                     "file_name": filename,
-                    "source_file": filename
+                    "source_file": filename,
+                    "document_type": "combined_pages"
                 }
             )
+            documents.append(combined_doc)
             
-            return [doc]
+            return documents
             
         except Exception as e:
             error_msg = f"Vision parser failed for {file_path}: {str(e)}"
@@ -268,7 +326,7 @@ class VisionParser(BaseDocumentParser):
                 # Convert page to image in thread pool to avoid blocking
                 loop = asyncio.get_event_loop()
                 with ThreadPoolExecutor(max_workers=1) as executor:
-                    base64_image = await loop.run_in_executor(
+                    base64_image, image_width, image_height = await loop.run_in_executor(
                         executor, 
                         self._convert_page_to_base64, 
                         pdf_document, 
@@ -278,7 +336,16 @@ class VisionParser(BaseDocumentParser):
                 # Use vision model to extract text as markdown with retry logic
                 markdown_content = await self._extract_text_with_vision(base64_image, page_num)
                 logger.info(f"Successfully processed page {page_num+1} of {file_path}")
-                return f"--- Page {page_num+1} ---\n\n{markdown_content}"
+                
+                # Return both text content and image data
+                page_data = {
+                    'text': f"--- Page {page_num+1} ---\n\n{markdown_content}",
+                    'base64_image': base64_image,
+                    'image_width': image_width,
+                    'image_height': image_height,
+                    'page_number': page_num + 1
+                }
+                return page_data
                 
             except Exception as e:
                 logger.error(f"Vision extraction failed for page {page_num+1} after all retries: {str(e)}")
@@ -287,25 +354,44 @@ class VisionParser(BaseDocumentParser):
                     page = pdf_document[page_num]
                     fallback_text = page.get_text()
                     logger.info(f"Using fallback text extraction for page {page_num+1}")
-                    return f"--- Page {page_num+1} (fallback extraction) ---\n\n{fallback_text}"
+                    
+                    # Return fallback page data with image if available
+                    fallback_page_data = {
+                        'text': f"--- Page {page_num+1} (fallback extraction) ---\n\n{fallback_text}",
+                        'base64_image': base64_image if 'base64_image' in locals() else None,
+                        'image_width': image_width if 'image_width' in locals() else None,
+                        'image_height': image_height if 'image_height' in locals() else None,
+                        'page_number': page_num + 1
+                    }
+                    return fallback_page_data
                 except Exception as fallback_error:
                     logger.error(f"Fallback extraction also failed for page {page_num+1}: {str(fallback_error)}")
-                    return f"--- Page {page_num+1} (extraction failed) ---\n\n[Content could not be extracted]"
+                    
+                    # Return error page data
+                    error_page_data = {
+                        'text': f"--- Page {page_num+1} (extraction failed) ---\n\n[Content could not be extracted]",
+                        'base64_image': None,
+                        'image_width': None,
+                        'image_height': None,
+                        'page_number': page_num + 1
+                    }
+                    return error_page_data
     
-    def _convert_page_to_base64(self, pdf_document, page_num: int) -> str:
-        """Convert a PDF page to base64 image (synchronous operation for thread pool).
+    def _convert_page_to_base64(self, pdf_document, page_num: int) -> tuple:
+        """Convert a PDF page to base64 image with dimensions (synchronous operation for thread pool).
         
         Args:
             pdf_document: PyMuPDF document object
             page_num: Page number (0-indexed)
             
         Returns:
-            Base64 encoded image string
+            Tuple of (base64_encoded_image, width, height)
         """
         page = pdf_document[page_num]
         pix = page.get_pixmap()
         img_data = pix.tobytes("png")
-        return base64.b64encode(img_data).decode('utf-8')
+        base64_image = base64.b64encode(img_data).decode('utf-8')
+        return base64_image, pix.width, pix.height
     
     async def _process_pages_sequentially(self, pdf_document, pages_to_process: int, file_path: str) -> List[str]:
         """Fallback method to process pages sequentially with retry logic.

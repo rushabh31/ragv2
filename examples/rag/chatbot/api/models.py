@@ -52,6 +52,9 @@ class RetrievedDocument(BaseModel):
     content: str
     metadata: Dict[str, Any]
     score: float
+    base64_image: Optional[str] = None
+    image_width: Optional[int] = None
+    image_height: Optional[int] = None
 
 
 class ChatResponse(BaseModel):
