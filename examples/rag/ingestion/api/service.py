@@ -169,6 +169,17 @@ class IngestionService:
         """
         job_id = str(uuid.uuid4())
         document_id = str(uuid.uuid4())
+        session_id = str(uuid.uuid4())  # Generate unique session ID for this ingestion session
+        
+        logger.info(f"Starting ingestion session {session_id} for document {document_id} by user {user_id}")
+        
+        # Initialize metadata if not provided
+        if metadata is None:
+            metadata = {}
+        
+        # Add session ID to metadata for propagation through pipeline
+        metadata['session_id'] = session_id
+        metadata['ingestion_started_at'] = datetime.now().isoformat()
         
         # Create job record
         job = ProcessingJob(
@@ -231,6 +242,15 @@ class IngestionService:
                     # Add created_at timestamp if not present
                     if 'created_at' not in doc.metadata:
                         doc.metadata['created_at'] = job.created_at.isoformat()
+                    
+                    # Add session_id from upload metadata if not present
+                    if 'session_id' not in doc.metadata and metadata and 'session_id' in metadata:
+                        doc.metadata['session_id'] = metadata['session_id']
+                        logger.info(f"Added session_id {metadata['session_id']} to document {job.document_id}")
+                    
+                    # Add ingestion timestamp if not present
+                    if 'ingestion_started_at' not in doc.metadata and metadata and 'ingestion_started_at' in metadata:
+                        doc.metadata['ingestion_started_at'] = metadata['ingestion_started_at']
                         
                     # Add filename - prefer original filename from upload metadata
                     if 'filename' not in doc.metadata:
@@ -274,6 +294,15 @@ class IngestionService:
             job.progress = 0.8
             for i, chunk in enumerate(chunks):
                 chunk.embedding = embeddings[i]
+                # Ensure session_id is in chunk metadata for tracking
+                if chunk.metadata and 'session_id' in chunk.metadata:
+                    logger.debug(f"Chunk {i} has session_id: {chunk.metadata['session_id']}")
+            
+            # Log session completion before storing
+            session_id = metadata.get('session_id') if metadata else None
+            if session_id:
+                logger.info(f"Storing {len(chunks)} chunks for session {session_id} in vector store")
+            
             await self._vector_store.add(chunks)
             
             # Update job status
@@ -449,6 +478,133 @@ class IngestionService:
                 "page_size": page_size
             }
     
+    async def get_session_info(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Get information about an ingestion session.
+        
+        Args:
+            session_id: Session identifier
+            
+        Returns:
+            Dictionary with session information or None if not found
+        """
+        try:
+            # Initialize components if needed
+            if not self._vector_store:
+                await self._init_components()
+            
+            # Query vector store for chunks with this session_id
+            if hasattr(self._vector_store, 'search_by_metadata'):
+                # Use metadata search if available
+                chunks = await self._vector_store.search_by_metadata({'session_id': session_id})
+            else:
+                # Fallback: search through all chunks
+                chunks = []
+                if hasattr(self._vector_store, 'chunks') and self._vector_store.chunks:
+                    chunks = [
+                        chunk for chunk in self._vector_store.chunks 
+                        if chunk.metadata and chunk.metadata.get('session_id') == session_id
+                    ]
+            
+            if not chunks:
+                logger.info(f"No chunks found for session {session_id}")
+                return None
+            
+            # Extract session information from chunks
+            first_chunk = chunks[0]
+            session_info = {
+                'session_id': session_id,
+                'total_chunks': len(chunks),
+                'document_id': first_chunk.metadata.get('document_id'),
+                'user_id': first_chunk.metadata.get('user_id'),
+                'filename': first_chunk.metadata.get('filename'),
+                'ingestion_started_at': first_chunk.metadata.get('ingestion_started_at'),
+                'created_at': first_chunk.metadata.get('created_at'),
+                'document_type': first_chunk.metadata.get('document_type'),
+                'page_count': first_chunk.metadata.get('page_count'),
+                'chunks_with_images': sum(1 for chunk in chunks if chunk.metadata and chunk.metadata.get('base64_image'))
+            }
+            
+            logger.info(f"Found session {session_id} with {len(chunks)} chunks")
+            return session_info
+            
+        except Exception as e:
+            logger.error(f"Error retrieving session info for {session_id}: {str(e)}", exc_info=True)
+            return None
+    
+    async def list_sessions(self, user_id: Optional[str] = None, page: int = 1, page_size: int = 20) -> Dict[str, Any]:
+        """List ingestion sessions.
+        
+        Args:
+            user_id: Optional user ID to filter sessions
+            page: Page number
+            page_size: Number of sessions per page
+            
+        Returns:
+            Dictionary with sessions, total count, and pagination info
+        """
+        try:
+            # Initialize components if needed
+            if not self._vector_store:
+                await self._init_components()
+            
+            # Get all chunks and group by session_id
+            sessions = {}
+            if hasattr(self._vector_store, 'chunks') and self._vector_store.chunks:
+                for chunk in self._vector_store.chunks:
+                    if not chunk.metadata or 'session_id' not in chunk.metadata:
+                        continue
+                    
+                    session_id = chunk.metadata['session_id']
+                    chunk_user_id = chunk.metadata.get('user_id')
+                    
+                    # Filter by user_id if provided
+                    if user_id and chunk_user_id != user_id:
+                        continue
+                    
+                    if session_id not in sessions:
+                        sessions[session_id] = {
+                            'session_id': session_id,
+                            'user_id': chunk_user_id,
+                            'document_id': chunk.metadata.get('document_id'),
+                            'filename': chunk.metadata.get('filename'),
+                            'ingestion_started_at': chunk.metadata.get('ingestion_started_at'),
+                            'created_at': chunk.metadata.get('created_at'),
+                            'total_chunks': 0,
+                            'chunks_with_images': 0
+                        }
+                    
+                    sessions[session_id]['total_chunks'] += 1
+                    if chunk.metadata.get('base64_image'):
+                        sessions[session_id]['chunks_with_images'] += 1
+            
+            # Convert to list and sort by ingestion_started_at (newest first)
+            sessions_list = list(sessions.values())
+            sessions_list.sort(key=lambda x: x.get('ingestion_started_at', ''), reverse=True)
+            
+            # Apply pagination
+            total = len(sessions_list)
+            start_idx = (page - 1) * page_size
+            end_idx = start_idx + page_size
+            paginated_sessions = sessions_list[start_idx:end_idx]
+            
+            logger.info(f"Found {total} sessions, returning {len(paginated_sessions)} for page {page}")
+            
+            return {
+                "sessions": paginated_sessions,
+                "total": total,
+                "page": page,
+                "page_size": page_size
+            }
+            
+        except Exception as e:
+            logger.error(f"Error listing sessions: {str(e)}", exc_info=True)
+            return {
+                "sessions": [],
+                "total": 0,
+                "page": page,
+                "page_size": page_size
+            }
+
     async def update_config(self, config_path: str, value: Any) -> bool:
         """Update ingestion configuration.
         

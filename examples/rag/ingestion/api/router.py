@@ -10,7 +10,9 @@ from examples.rag.ingestion.api.models import (
     JobStatusResponse,
     DocumentListResponse,
     ConfigUpdateRequest,
-    ConfigUpdateResponse
+    ConfigUpdateResponse,
+    SessionInfoResponse,
+    SessionListResponse
 )
 from examples.rag.ingestion.api.service import IngestionService
 from src.rag.core.exceptions.exceptions import DocumentProcessingError
@@ -316,6 +318,127 @@ async def test_document_metadata(
     except Exception as e:
         logger.error(f"Error in test endpoint: {str(e)}", exc_info=True)
         return {"error": str(e), "error_type": type(e).__name__}
+
+@router.get("/sessions/{session_id}", response_model=SessionInfoResponse)
+async def get_session_info(
+    session_id: str,
+    soeid: str = Header(...),
+    service: IngestionService = Depends(get_ingestion_service)
+):
+    """Get information about a specific ingestion session.
+    
+    Args:
+        session_id: Session identifier
+        soeid: User identifier (header)
+        service: Ingestion service instance
+    
+    Returns:
+        Session information including chunks, document details, and processing stats
+    """
+    try:
+        session_info = await service.get_session_info(session_id)
+        
+        if not session_info:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session {session_id} not found"
+            )
+        
+        return SessionInfoResponse(**session_info)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get session info: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve session information: {str(e)}"
+        )
+
+
+@router.get("/sessions", response_model=SessionListResponse)
+async def list_sessions(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    user_id: Optional[str] = Query(None, description="Filter sessions by user ID"),
+    soeid: str = Header(...),
+    service: IngestionService = Depends(get_ingestion_service)
+):
+    """List ingestion sessions with pagination.
+    
+    Args:
+        page: Page number
+        page_size: Number of sessions per page
+        user_id: Optional user ID to filter sessions
+        soeid: User identifier (header)
+        service: Ingestion service instance
+    
+    Returns:
+        List of session information with pagination
+    """
+    try:
+        # If no user_id filter provided, use the authenticated user's SOEID
+        filter_user_id = user_id if user_id else soeid
+        
+        result = await service.list_sessions(user_id=filter_user_id, page=page, page_size=page_size)
+        
+        # Convert to response models
+        sessions = [SessionInfoResponse(**session) for session in result["sessions"]]
+        
+        return SessionListResponse(
+            sessions=sessions,
+            total=result["total"],
+            page=result["page"],
+            page_size=result["page_size"]
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed to list sessions: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve sessions: {str(e)}"
+        )
+
+
+@router.get("/sessions/all", response_model=SessionListResponse)
+async def list_all_sessions(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    soeid: str = Header(...),
+    service: IngestionService = Depends(get_ingestion_service)
+):
+    """List all ingestion sessions (admin endpoint).
+    
+    Args:
+        page: Page number
+        page_size: Number of sessions per page
+        soeid: User identifier (header)
+        service: Ingestion service instance
+    
+    Returns:
+        List of all session information with pagination
+    """
+    try:
+        # Note: In production, you might want to add admin authorization here
+        result = await service.list_sessions(user_id=None, page=page, page_size=page_size)
+        
+        # Convert to response models
+        sessions = [SessionInfoResponse(**session) for session in result["sessions"]]
+        
+        return SessionListResponse(
+            sessions=sessions,
+            total=result["total"],
+            page=result["page"],
+            page_size=result["page_size"]
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed to list all sessions: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve all sessions: {str(e)}"
+        )
+
 
 @router.post("/configure", response_model=ConfigUpdateResponse)
 async def update_configuration(

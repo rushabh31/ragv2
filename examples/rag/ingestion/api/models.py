@@ -84,3 +84,25 @@ class ConfigUpdateResponse(BaseModel):
     """Response model for configuration update."""
     success: bool
     message: str
+
+
+class SessionInfoResponse(BaseModel):
+    """Response model for session information."""
+    session_id: str
+    total_chunks: int
+    document_id: Optional[str] = None
+    user_id: Optional[str] = None
+    filename: Optional[str] = None
+    ingestion_started_at: Optional[str] = None
+    created_at: Optional[str] = None
+    document_type: Optional[str] = None
+    page_count: Optional[int] = None
+    chunks_with_images: int = 0
+
+
+class SessionListResponse(BaseModel):
+    """Response model for session list."""
+    sessions: List[SessionInfoResponse]
+    total: int
+    page: int
+    page_size: int

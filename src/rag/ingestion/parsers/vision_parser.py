@@ -203,9 +203,6 @@ class VisionParser(BaseDocumentParser):
                 logger.info("Falling back to sequential processing...")
                 all_text = await self._process_pages_sequentially(pdf_document, pages_to_process, file_path)
             
-            # Combine all text
-            combined_text = "\n\n".join(all_text)
-            
             # Create documents with page-level image data
             documents = []
             
@@ -231,18 +228,7 @@ class VisionParser(BaseDocumentParser):
                 )
                 documents.append(page_doc)
             
-            # Also create a combined document for backward compatibility
-            combined_doc = Document(
-                content=combined_text,
-                metadata={
-                    **document_metadata.dict(),
-                    "extraction_method": "vision_parser",
-                    "file_name": filename,
-                    "source_file": filename,
-                    "document_type": "combined_pages"
-                }
-            )
-            documents.append(combined_doc)
+            logger.info(f"Created {len(documents)} page-level documents for {filename}")
             
             return documents
             
@@ -259,9 +245,18 @@ class VisionParser(BaseDocumentParser):
             page_num: Page number for logging purposes
             
         Returns:
-            Extracted text in markdown format
+            Extracted text content as markdown
+            
+        Raises:
+            Exception: If vision extraction fails after all retries
         """
-        prompt = """
+        # Debug logging to identify type issues
+        logger.debug(f"_extract_text_with_vision called with base64_image type: {type(base64_image)}")
+        if not isinstance(base64_image, str):
+            logger.error(f"ERROR: base64_image is not a string! Type: {type(base64_image)}, Value: {base64_image}")
+            raise TypeError(f"base64_image must be a string, got {type(base64_image)}")
+        
+        prompt = f"""
         Please extract all text content from this document page into markdown format.
         Preserve the structure, tables, and formatting as accurately as possible.
         For tables, use proper markdown table syntax.
@@ -326,12 +321,23 @@ class VisionParser(BaseDocumentParser):
                 # Convert page to image in thread pool to avoid blocking
                 loop = asyncio.get_event_loop()
                 with ThreadPoolExecutor(max_workers=1) as executor:
-                    base64_image, image_width, image_height = await loop.run_in_executor(
+                    result = await loop.run_in_executor(
                         executor, 
                         self._convert_page_to_base64, 
                         pdf_document, 
                         page_num
                     )
+                    
+                # Debug logging for tuple unpacking
+                logger.debug(f"_convert_page_to_base64 returned: {type(result)}, value: {result}")
+                
+                # Unpack the tuple
+                if isinstance(result, tuple) and len(result) == 3:
+                    base64_image, image_width, image_height = result
+                    logger.debug(f"Successfully unpacked tuple: base64_image type: {type(base64_image)}")
+                else:
+                    logger.error(f"ERROR: Expected tuple of length 3, got {type(result)} with value {result}")
+                    raise ValueError(f"Invalid return from _convert_page_to_base64: {type(result)}")
                 
                 # Use vision model to extract text as markdown with retry logic
                 markdown_content = await self._extract_text_with_vision(base64_image, page_num)
@@ -409,7 +415,18 @@ class VisionParser(BaseDocumentParser):
         for page_num in range(pages_to_process):
             try:
                 # Get page as image
-                base64_image = self._convert_page_to_base64(pdf_document, page_num)
+                result = self._convert_page_to_base64(pdf_document, page_num)
+                
+                # Debug logging for tuple unpacking (sequential)
+                logger.debug(f"_convert_page_to_base64 returned (sequential): {type(result)}, value: {result}")
+                
+                # Unpack the tuple
+                if isinstance(result, tuple) and len(result) == 3:
+                    base64_image, image_width, image_height = result
+                    logger.debug(f"Successfully unpacked tuple (sequential): base64_image type: {type(base64_image)}")
+                else:
+                    logger.error(f"ERROR (sequential): Expected tuple of length 3, got {type(result)} with value {result}")
+                    raise ValueError(f"Invalid return from _convert_page_to_base64 (sequential): {type(result)}")
                 
                 # Use vision model to extract text as markdown with retry logic
                 markdown_content = await self._extract_text_with_vision(base64_image, page_num)

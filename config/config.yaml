@@ -147,7 +147,7 @@ chatbot:
     template: rag_prompt.jinja2
   memory:
     # Memory type: "simple", "mem0", "langgraph", or "langgraph_checkpoint"
-    type: langgraph_checkpoint
+    type: advanced_langgraph_checkpoint
     # LangGraph memory settings
     store_type: postgres  # "in_memory" or "postgres"
     embedding_dimensions: 384
