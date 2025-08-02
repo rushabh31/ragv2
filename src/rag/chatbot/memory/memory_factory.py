@@ -5,7 +5,6 @@ from typing import Dict, Any, Optional
 
 from src.rag.chatbot.memory.base_memory import BaseMemory
 from src.rag.chatbot.memory.simple_memory import SimpleMemory
-from src.rag.chatbot.memory.mem0_memory import Mem0Memory
 from src.rag.chatbot.memory.langgraph_memory import LangGraphMemory
 from src.rag.chatbot.memory.langgraph_checkpoint_memory import LangGraphCheckpointMemory
 from src.rag.chatbot.memory.advanced_langgraph_checkpoint_memory import AdvancedLangGraphCheckpointMemory

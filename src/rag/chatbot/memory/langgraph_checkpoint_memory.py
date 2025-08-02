@@ -233,18 +233,17 @@ class LangGraphCheckpointMemory(BaseMemory):
                 "last_updated": datetime.now().isoformat()
             }
             
-            # Get existing messages from our internal tracking
-            existing_messages = []
-            session_key = f"session_{session_id}"
+            # Get existing messages from PostgreSQL first (for persistence across restarts)
+            existing_messages = await self._get_messages_from_checkpoint(session_id)
+            logger.debug(f"Retrieved {len(existing_messages)} existing messages from PostgreSQL for session {session_id}")
             
-            # Check if we have messages stored in our internal tracking
-            if hasattr(self, '_session_messages'):
-                existing_messages = self._session_messages.get(session_key, [])
-            else:
-                self._session_messages = {}
-            
-            # Append new message to our internal tracking
+            # Append new message to existing messages
             all_messages = existing_messages + [message_data]
+            
+            # Update internal tracking for performance
+            session_key = f"session_{session_id}"
+            if not hasattr(self, '_session_messages'):
+                self._session_messages = {}
             self._session_messages[session_key] = all_messages
             
             # Create a unique checkpoint ID for this update
@@ -292,18 +291,7 @@ class LangGraphCheckpointMemory(BaseMemory):
             List of messages
         """
         try:
-            # First try to get from our internal storage (most reliable)
-            if hasattr(self, '_simple_storage') and session_id in self._simple_storage:
-                messages = self._simple_storage[session_id]
-                logger.debug(f"Retrieved {len(messages)} messages from internal storage for session {session_id}")
-                
-                # Apply limit if specified
-                if limit and len(messages) > limit:
-                    messages = messages[-limit:]
-                
-                return messages
-            
-            # Fallback to checkpoint retrieval
+            # Always try PostgreSQL first for persistence
             config = await self._get_thread_config(session_id)
             logger.debug(f"Getting messages for session {session_id} with config: {config}")
             
@@ -315,35 +303,45 @@ class LangGraphCheckpointMemory(BaseMemory):
                 checkpoint = self._checkpointer.get(config)
             logger.debug(f"Retrieved checkpoint: {checkpoint}")
             
-            if not checkpoint:
-                logger.debug(f"No checkpoint found for session {session_id}")
-                return []
+            # If we got data from PostgreSQL, cache it and return it
+            if checkpoint:
+                # Handle both dict and object formats
+                channel_values = None
+                if isinstance(checkpoint, dict):
+                    channel_values = checkpoint.get('channel_values', {})
+                elif hasattr(checkpoint, 'channel_values'):
+                    channel_values = checkpoint.channel_values
+                
+                if channel_values:
+                    messages = channel_values.get("messages", [])
+                    if isinstance(messages, list) and messages:
+                        logger.debug(f"Retrieved {len(messages)} messages from PostgreSQL for session {session_id}")
+                        
+                        # Cache in memory for performance
+                        if not hasattr(self, '_simple_storage'):
+                            self._simple_storage = {}
+                        self._simple_storage[session_id] = messages
+                        
+                        # Apply limit if specified
+                        if limit and len(messages) > limit:
+                            messages = messages[-limit:]
+                        
+                        return messages
             
-            # Handle both dict and object formats
-            channel_values = None
-            if isinstance(checkpoint, dict):
-                channel_values = checkpoint.get('channel_values', {})
-            elif hasattr(checkpoint, 'channel_values'):
-                channel_values = checkpoint.channel_values
+            # Fallback to internal storage if PostgreSQL has no data
+            if hasattr(self, '_simple_storage') and session_id in self._simple_storage:
+                messages = self._simple_storage[session_id]
+                logger.debug(f"Retrieved {len(messages)} messages from internal storage fallback for session {session_id}")
+                
+                # Apply limit if specified
+                if limit and len(messages) > limit:
+                    messages = messages[-limit:]
+                
+                return messages
             
-            if not channel_values:
-                logger.debug(f"No channel_values found in checkpoint")
-                return []
-            
-            logger.debug(f"Checkpoint channel_values: {channel_values}")
-            
-            messages = channel_values.get("messages", [])
-            if not isinstance(messages, list):
-                logger.debug(f"Messages is not a list: {type(messages)}")
-                return []
-            
-            logger.debug(f"Found {len(messages)} messages for session {session_id}")
-            
-            # Apply limit if specified
-            if limit and len(messages) > limit:
-                messages = messages[-limit:]
-            
-            return messages
+            # No data found in PostgreSQL or internal storage
+            logger.debug(f"No messages found for session {session_id}")
+            return []
             
         except Exception as e:
             logger.error(f"Failed to get messages from checkpoint: {str(e)}", exc_info=True)
