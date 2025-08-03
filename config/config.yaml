@@ -49,15 +49,6 @@ ingestion:
       enabled: true
     pymupdf:
       enabled: false
-    openai_vision:
-      enabled: false
-      model: gpt-4-vision-preview
-      api_key: "${OPENAI_API_KEY}"
-      max_pages: 50
-      # For Azure OpenAI, uncomment and configure these
-      # api_base: "https://your-resource.openai.azure.com"
-      # api_version: "2023-12-01-preview"
-      # api_type: "azure"
   chunking:
     strategy: page_based
     # Options for page-based chunking
@@ -76,31 +67,17 @@ ingestion:
     max_workers: 4
   vector_store:
     # Choose vector store type: "faiss", "pgvector", or "chromadb"
-    # Temporarily using FAISS while setting up pgvector
-    type: faiss
+    type: pgvector
     # Common settings
     dimension: 768  # Must match embedding model dimension (768 for text-embedding-004)
     
-    # FAISS specific settings
-    faiss:
-      index_type: HNSW     # Options: Flat, HNSW, IVF
-      metric: inner_product # Options: inner_product, l2
-      nlist: 100           # For IVF indexes
-      nprobe: 10           # For IVF search
-    
     # PgVector specific settings
     pgvector:
-      connection_string: "postgresql://rushabhsmacbook@localhost:5432/rag_vector_db"
+      connection_string: "postgresql://rushabhsmacbook@localhost:5432/rag_vector_db?sslmode=prefer"
       table_name: "document_embeddings"
-      schema_name: "public"  # PostgreSQL schema name (default: 'public')
+      schema_name: "public"
       index_method: "hnsw"  # Options: ivfflat, hnsw
       metadata_path: "./data/pgvector_metadata.pkl"
-    
-    # ChromaDB specific settings
-    chromadb:
-      persist_directory: "./data/chromadb"
-      collection_name: "document_embeddings"
-      distance_function: "cosine"  # Options: cosine, l2, ip
 
 # Chatbot API settings
 chatbot:
@@ -110,11 +87,11 @@ chatbot:
   retrieval:
     vector_store:
       type: pgvector
-      connection_string: "postgresql://rushabhsmacbook@localhost:5432/rag_vector_db"
+      connection_string: "postgresql://rushabhsmacbook@localhost:5432/rag_vector_db?sslmode=prefer"
       table_name: "document_embeddings"
-      schema_name: "public"  # PostgreSQL schema name (default: 'public')
-      dimension: 768  # Must match embedding model dimension (text-embedding-004)
-      index_method: "hnsw"  # Options: ivfflat, hnsw
+      schema_name: "public"
+      dimension: 768
+      index_method: "hnsw"
       metadata_path: "./data/pgvector_metadata.pkl"
     embedding:
       provider: vertex_ai
@@ -146,19 +123,26 @@ chatbot:
     templates_dir: config/prompts/chatbot
     template: rag_prompt.jinja2
   memory:
-    # Memory type: "simple", "mem0", "langgraph", or "langgraph_checkpoint"
-    type: advanced_langgraph_checkpoint
+    # Memory type: "simple" or "langgraph_checkpoint"
+    type: langgraph_checkpoint
+    # Memory enable/disable settings
+    enabled: true
+    chat_history_enabled: true
+    max_history_days: 30  # Number of days to keep chat history (0 = unlimited)
     # LangGraph memory settings
     store_type: postgres  # "in_memory" or "postgres"
-    embedding_dimensions: 384
     max_history: 20
     # PostgreSQL settings (only used if store_type is "postgres")
     postgres:
-      connection_string: "postgresql://rushabhsmacbook@localhost:5432/langgraph_memory_db"
-    # Legacy settings for simple memory
-    max_messages: 20
-    message_expiry_minutes: 60
-    max_sessions: 1000
+      connection_string: "postgresql://rushabhsmacbook@localhost:5432/langgraph_memory_db?sslmode=prefer"
+      pool_min_size: 1
+      pool_max_size: 10
+      command_timeout: 60
+      ssl:
+        mode: prefer  # Options: disable, allow, prefer, require, verify-ca, verify-full
+        # cert_file: "/path/to/client-cert.pem"  # Uncomment and set path if using client certificates
+        # key_file: "/path/to/client-key.pem"
+        # ca_file: "/path/to/ca-cert.pem"
 
 # Vision model configuration
 vision:

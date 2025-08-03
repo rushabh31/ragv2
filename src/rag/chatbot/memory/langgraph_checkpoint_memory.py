@@ -3,26 +3,34 @@
 import logging
 import asyncio
 import uuid
-from typing import Dict, Any, List, Optional, Union
+from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
+from contextlib import asynccontextmanager
+import asyncpg
 
 # Import LangGraph checkpoint components
 try:
     from langgraph.checkpoint.memory import InMemorySaver
-    from langgraph.checkpoint.base import BaseCheckpointSaver
     LANGGRAPH_CHECKPOINT_AVAILABLE = True
 except ImportError:
     LANGGRAPH_CHECKPOINT_AVAILABLE = False
     InMemorySaver = None
-    BaseCheckpointSaver = None
 
-# Try to import PostgreSQL checkpoint saver
+# Try to import PostgreSQL checkpoint saver (sync)
 try:
     from langgraph.checkpoint.postgres import PostgresSaver
     POSTGRES_CHECKPOINT_AVAILABLE = True
 except ImportError:
     PostgresSaver = None
     POSTGRES_CHECKPOINT_AVAILABLE = False
+
+# Try to import async PostgreSQL checkpoint saver
+try:
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+    ASYNC_POSTGRES_CHECKPOINT_AVAILABLE = True
+except ImportError:
+    AsyncPostgresSaver = None
+    ASYNC_POSTGRES_CHECKPOINT_AVAILABLE = False
 
 # Import LangGraph store components for long-term memory
 try:
@@ -53,7 +61,9 @@ class LangGraphCheckpointMemory(BaseMemory):
     This implementation uses:
     - LangGraph checkpointers for conversation history (thread-scoped memory)
     - LangGraph stores for long-term memory (cross-thread memory)
-    - Support for both in-memory and PostgreSQL storage
+    - Support for both in-memory and async PostgreSQL storage
+    - Enable/disable memory and chat history functionality
+    - SSL configuration and connection pooling
     """
     
     def __init__(self, config: Dict[str, Any] = None):
@@ -75,8 +85,19 @@ class LangGraphCheckpointMemory(BaseMemory):
         self._store_type = self._config.get("store_type", "in_memory")
         self._postgres_config = self._config.get("postgres", {})
         
-        # Initialize checkpointer for conversation history
-        self._checkpointer = self._init_checkpointer()
+        # Memory enable/disable settings
+        self._memory_enabled = self._config.get("enabled", True)
+        self._chat_history_enabled = self._config.get("chat_history_enabled", True)
+        self._max_history_days = self._config.get("max_history_days", 30)
+        
+        # Connection pooling settings
+        self._connection_string = None
+        self._connection_pool = None
+        self._pool_lock = asyncio.Lock()
+        
+        # Initialize checkpointer (will be done async)
+        self._checkpointer = None
+        self._checkpointer_context = None
         
         # Initialize store for long-term memory (if available)
         self._store = None
@@ -87,58 +108,149 @@ class LangGraphCheckpointMemory(BaseMemory):
         self._sessions: Dict[str, Dict[str, Any]] = {}
         self._lock = asyncio.Lock()
         
-        logger.info(f"LangGraph checkpoint memory system initialized with {self._store_type} storage")
-    
-    def _init_checkpointer(self) -> BaseCheckpointSaver:
-        """Initialize the appropriate LangGraph checkpointer.
+        # Initialize components asynchronously
+        asyncio.create_task(self._init_checkpointer())
         
-        Returns:
-            BaseCheckpointSaver: The initialized checkpointer
-        """
+        logger.info(f"LangGraph checkpoint memory system initialized with {self._store_type} storage")
+        logger.info(f"Memory enabled: {self._memory_enabled}, Chat history enabled: {self._chat_history_enabled}")
+    
+    async def _init_checkpointer(self):
+        """Initialize the appropriate async LangGraph checkpointer."""
         try:
+            if not self._memory_enabled:
+                logger.info("Memory disabled - using no-op checkpointer")
+                self._checkpointer = None
+                return
+            
             if self._store_type == "in_memory":
-                return InMemorySaver()
+                self._checkpointer = InMemorySaver()
+                logger.info("Initialized in-memory checkpointer")
             elif self._store_type == "postgres":
-                if not POSTGRES_CHECKPOINT_AVAILABLE:
-                    logger.warning("PostgreSQL checkpointer is not available. Falling back to in-memory checkpointer.")
-                    self._store_type = "in_memory"
-                    return InMemorySaver()
+                if not ASYNC_POSTGRES_CHECKPOINT_AVAILABLE:
+                    logger.warning("Async PostgreSQL checkpointer is not available. Falling back to sync PostgreSQL.")
+                    if not POSTGRES_CHECKPOINT_AVAILABLE:
+                        logger.warning("PostgreSQL checkpointer is not available. Falling back to in-memory checkpointer.")
+                        self._store_type = "in_memory"
+                        self._checkpointer = InMemorySaver()
+                        return
                 
                 # Get PostgreSQL connection string
-                connection_string = self._postgres_config.get("connection_string")
-                if not connection_string:
+                self._connection_string = self._postgres_config.get("connection_string")
+                if not self._connection_string:
                     raise MemoryError("PostgreSQL connection string is required for postgres store type")
                 
-                # For PostgreSQL, we need to use the context manager for each operation
-                # Store the connection string for creating connections as needed
-                self._postgres_connection_string = connection_string
-                
-                # Test the connection and set up schema
-                with PostgresSaver.from_conn_string(connection_string) as postgres_saver:
-                    try:
-                        postgres_saver.setup()
-                        logger.info("PostgreSQL database schema setup completed")
-                    except Exception as setup_error:
-                        logger.warning(f"PostgreSQL schema setup failed: {setup_error}")
-                        # Continue anyway, tables might already exist
+                # Initialize connection pool if using async
+                if ASYNC_POSTGRES_CHECKPOINT_AVAILABLE:
+                    await self._init_connection_pool()
                     
-                    logger.info(f"PostgreSQL checkpointer initialized: {type(postgres_saver)}")
-                    logger.info("PostgreSQL connection tested successfully")
-                
-                # Return a placeholder - we'll use context managers for actual operations
-                return "postgres_checkpointer"
+                    # Initialize async checkpointer and test setup
+                    async with self._get_checkpointer() as checkpointer:
+                        if checkpointer:
+                            try:
+                                await checkpointer.setup()
+                                logger.info("PostgreSQL database schema setup completed")
+                            except Exception as setup_error:
+                                logger.warning(f"PostgreSQL schema setup failed: {setup_error}")
+                                # Continue anyway, tables might already exist
+                    
+                    logger.info("Async PostgreSQL checkpointer initialized successfully")
+                else:
+                    # Fallback to sync PostgreSQL
+                    with PostgresSaver.from_conn_string(self._connection_string) as postgres_saver:
+                        try:
+                            postgres_saver.setup()
+                            logger.info("PostgreSQL database schema setup completed")
+                        except Exception as setup_error:
+                            logger.warning(f"PostgreSQL schema setup failed: {setup_error}")
+                    
+                    self._postgres_connection_string = self._connection_string
+                    self._checkpointer = "postgres_checkpointer"
+                    logger.info("Sync PostgreSQL checkpointer initialized")
             else:
                 raise MemoryError(f"Unsupported store type: {self._store_type}")
+                
         except Exception as e:
             error_msg = f"Failed to initialize {self._store_type} checkpointer: {str(e)}"
             logger.error(error_msg)
             raise MemoryError(error_msg) from e
     
-    def _init_store(self) -> Optional[BaseStore]:
+    async def _init_connection_pool(self):
+        """Initialize PostgreSQL connection pool with proper SSL configuration."""
+        async with self._pool_lock:
+            if self._connection_pool is not None:
+                return
+            
+            try:
+                # Parse connection string to add SSL settings
+                import urllib.parse as urlparse
+                parsed = urlparse.urlparse(self._connection_string)
+                
+                # SSL configuration
+                ssl_config = self._postgres_config.get("ssl", {})
+                ssl_mode = ssl_config.get("mode", "prefer")
+                
+                # Build connection parameters
+                conn_params = {
+                    "host": parsed.hostname,
+                    "port": parsed.port or 5432,
+                    "user": parsed.username,
+                    "password": parsed.password,
+                    "database": parsed.path.lstrip('/'),
+                    "ssl": ssl_mode,
+                    "min_size": self._postgres_config.get("pool_min_size", 1),
+                    "max_size": self._postgres_config.get("pool_max_size", 10),
+                    "command_timeout": self._postgres_config.get("command_timeout", 60),
+                    "server_settings": {
+                        "application_name": "controlsgenai_memory",
+                        "statement_timeout": "60000"
+                    }
+                }
+                
+                # Add SSL certificate paths if provided
+                if ssl_config.get("cert_file"):
+                    conn_params["ssl"] = {
+                        "sslmode": ssl_mode,
+                        "sslcert": ssl_config["cert_file"],
+                        "sslkey": ssl_config.get("key_file"),
+                        "sslrootcert": ssl_config.get("ca_file")
+                    }
+                
+                # Create connection pool
+                self._connection_pool = await asyncpg.create_pool(**conn_params)
+                logger.info(f"Created PostgreSQL connection pool with {conn_params['min_size']}-{conn_params['max_size']} connections")
+                
+            except Exception as e:
+                error_msg = f"Failed to create PostgreSQL connection pool: {str(e)}"
+                logger.error(error_msg)
+                raise MemoryError(error_msg) from e
+    
+    @asynccontextmanager
+    async def _get_checkpointer(self):
+        """Get async checkpointer context manager."""
+        if not self._memory_enabled:
+            yield None
+            return
+        
+        if self._store_type == "in_memory":
+            yield self._checkpointer
+        elif self._store_type == "postgres":
+            if ASYNC_POSTGRES_CHECKPOINT_AVAILABLE and self._connection_pool:
+                async with AsyncPostgresSaver.from_conn_string(self._connection_string) as checkpointer:
+                    yield checkpointer
+            elif hasattr(self, '_postgres_connection_string'):
+                # Fallback to sync context manager
+                with PostgresSaver.from_conn_string(self._postgres_connection_string) as checkpointer:
+                    yield checkpointer
+            else:
+                yield None
+        else:
+            yield None
+    
+    def _init_store(self) -> Optional[Any]:
         """Initialize the appropriate LangGraph store for long-term memory.
         
         Returns:
-            BaseStore: The initialized store or None if not available
+            The initialized store or None if not available
         """
         try:
             if self._store_type == "in_memory":
@@ -155,7 +267,7 @@ class LangGraphCheckpointMemory(BaseMemory):
             logger.warning(f"Failed to initialize store for long-term memory: {str(e)}")
             return None
     
-    def _init_in_memory_store(self) -> InMemoryStore:
+    def _init_in_memory_store(self) -> Any:
         """Initialize in-memory store for long-term memory.
         
         Returns:
@@ -163,7 +275,7 @@ class LangGraphCheckpointMemory(BaseMemory):
         """
         return InMemoryStore()
     
-    def _init_postgres_store(self) -> PostgresStore:
+    def _init_postgres_store(self) -> Any:
         """Initialize PostgreSQL store for long-term memory.
         
         Returns:
@@ -208,6 +320,10 @@ class LangGraphCheckpointMemory(BaseMemory):
         Returns:
             True if successful, False otherwise
         """
+        if not self._memory_enabled or not self._chat_history_enabled:
+            logger.debug("Memory or chat history disabled - skipping message storage")
+            return True
+        
         try:
             # Create message data
             message_data = {
@@ -227,11 +343,6 @@ class LangGraphCheckpointMemory(BaseMemory):
             
             # For checkpointers, we need to create a simple state structure
             # This is a simplified approach - in a real implementation you'd use a proper LangGraph graph
-            state = {
-                "messages": [message_data],
-                "session_id": session_id,
-                "last_updated": datetime.now().isoformat()
-            }
             
             # Get existing messages from PostgreSQL first (for persistence across restarts)
             existing_messages = await self._get_messages_from_checkpoint(session_id)
@@ -259,14 +370,15 @@ class LangGraphCheckpointMemory(BaseMemory):
                 "versions_seen": {}
             }
             
-            # Store the checkpoint using sync method with context manager
-            if self._store_type == "postgres":
-                with PostgresSaver.from_conn_string(self._postgres_connection_string) as checkpointer:
-                    checkpointer.put(config, checkpoint_data, {}, {})
-                    logger.debug(f"Successfully stored checkpoint in PostgreSQL for session {session_id}")
-            else:
-                self._checkpointer.put(config, checkpoint_data, {}, {})
-                logger.debug(f"Successfully stored checkpoint in in-memory storage for session {session_id}")
+            # Store the checkpoint using async context manager
+            async with self._get_checkpointer() as checkpointer:
+                if checkpointer:
+                    if ASYNC_POSTGRES_CHECKPOINT_AVAILABLE and self._store_type == "postgres":
+                        await checkpointer.aput(config, checkpoint_data, {}, {})
+                        logger.debug(f"Successfully stored checkpoint in async PostgreSQL for session {session_id}")
+                    else:
+                        checkpointer.put(config, checkpoint_data, {}, {})
+                        logger.debug(f"Successfully stored checkpoint for session {session_id}")
             
             # Update internal cache for performance (but don't rely on it for persistence)
             if not hasattr(self, '_session_messages'):
@@ -293,22 +405,25 @@ class LangGraphCheckpointMemory(BaseMemory):
         Returns:
             List of messages
         """
+        if not self._memory_enabled or not self._chat_history_enabled:
+            logger.debug("Memory or chat history disabled - returning empty messages")
+            return []
+        
         try:
-            # Always try to get from persistent storage first
             config = await self._get_thread_config(session_id)
             logger.debug(f"Getting messages for session {session_id} with config: {config}")
             
             checkpoint = None
-            # Use context manager for PostgreSQL
-            if self._store_type == "postgres":
-                with PostgresSaver.from_conn_string(self._postgres_connection_string) as checkpointer:
-                    checkpoint = checkpointer.get(config)
-                    logger.debug(f"Retrieved checkpoint from PostgreSQL: {checkpoint is not None}")
-            else:
-                checkpoint = self._checkpointer.get(config)
-                logger.debug(f"Retrieved checkpoint from in-memory: {checkpoint is not None}")
+            # Use async context manager
+            async with self._get_checkpointer() as checkpointer:
+                if checkpointer:
+                    if ASYNC_POSTGRES_CHECKPOINT_AVAILABLE and self._store_type == "postgres":
+                        checkpoint = await checkpointer.aget(config)
+                        logger.debug(f"Retrieved checkpoint from async PostgreSQL: {checkpoint is not None}")
+                    else:
+                        checkpoint = checkpointer.get(config)
+                        logger.debug(f"Retrieved checkpoint: {checkpoint is not None}")
             
-            # If we got data from persistent storage, return it
             if checkpoint:
                 # Handle both dict and object formats
                 channel_values = None
@@ -322,11 +437,24 @@ class LangGraphCheckpointMemory(BaseMemory):
                     if isinstance(messages, list):
                         logger.info(f"Retrieved {len(messages)} messages from persistent storage for session {session_id}")
                         
-                        # Update cache for performance
-                        if not hasattr(self, '_session_messages'):
-                            self._session_messages = {}
-                        session_key = f"session_{session_id}"
-                        self._session_messages[session_key] = messages
+                        # Filter by date if max_history_days is set
+                        if self._max_history_days > 0:
+                            cutoff_date = datetime.now() - timedelta(days=self._max_history_days)
+                            filtered_messages = []
+                            for msg in messages:
+                                timestamp_str = msg.get("timestamp")
+                                if timestamp_str:
+                                    try:
+                                        timestamp = datetime.fromisoformat(timestamp_str)
+                                        if timestamp >= cutoff_date:
+                                            filtered_messages.append(msg)
+                                    except (ValueError, TypeError):
+                                        # Include message if timestamp parsing fails
+                                        filtered_messages.append(msg)
+                                else:
+                                    # Include messages without timestamps
+                                    filtered_messages.append(msg)
+                            messages = filtered_messages
                         
                         # Apply limit if specified
                         if limit and len(messages) > limit:
@@ -334,7 +462,6 @@ class LangGraphCheckpointMemory(BaseMemory):
                         
                         return messages
             
-            # No data found in persistent storage
             logger.info(f"No messages found in persistent storage for session {session_id}")
             return []
             
@@ -379,6 +506,10 @@ class LangGraphCheckpointMemory(BaseMemory):
         Returns:
             True if successful, False otherwise
         """
+        if not self._memory_enabled:
+            logger.debug("Memory disabled - skipping interaction storage")
+            return True
+        
         try:
             async with self._lock:
                 success = True
@@ -437,7 +568,7 @@ class LangGraphCheckpointMemory(BaseMemory):
     
     async def _get_relevant_history(self, 
                                   session_id: str, 
-                                  query: str, 
+                                  query: str,  # Currently unused but kept for interface compatibility
                                   limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """Get query-relevant conversation history.
         
@@ -658,7 +789,7 @@ class LangGraphCheckpointMemory(BaseMemory):
     
     async def get_relevant_history(self, 
                                  session_id: str, 
-                                 query: str, 
+                                 query: str,  # Currently unused but kept for interface compatibility
                                  limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """Get query-relevant conversation history.
         
@@ -947,10 +1078,47 @@ class LangGraphCheckpointMemory(BaseMemory):
             logger.error(f"Failed to get chat history by SOEID and date: {str(e)}", exc_info=True)
             return []
     
-    def cleanup(self):
+    def is_enabled(self) -> bool:
+        """Check if memory is enabled.
+        
+        Returns:
+            True if memory is enabled, False otherwise
+        """
+        return self._memory_enabled
+    
+    def is_chat_history_enabled(self) -> bool:
+        """Check if chat history is enabled.
+        
+        Returns:
+            True if chat history is enabled, False otherwise
+        """
+        return self._chat_history_enabled
+    
+    def set_enabled(self, enabled: bool):
+        """Enable or disable memory.
+        
+        Args:
+            enabled: Whether to enable memory
+        """
+        self._memory_enabled = enabled
+        logger.info(f"Memory enabled set to: {enabled}")
+    
+    def set_chat_history_enabled(self, enabled: bool):
+        """Enable or disable chat history.
+        
+        Args:
+            enabled: Whether to enable chat history
+        """
+        self._chat_history_enabled = enabled
+        logger.info(f"Chat history enabled set to: {enabled}")
+    
+    async def cleanup(self):
         """Clean up resources."""
-        # No persistent connections to clean up with the new approach
-        if hasattr(self, '_postgres_connection_string'):
+        if self._connection_pool:
+            await self._connection_pool.close()
+            self._connection_pool = None
+            logger.info("PostgreSQL connection pool closed")
+        elif hasattr(self, '_postgres_connection_string'):
             logger.info("PostgreSQL memory cleanup - no persistent connections to close")
         
         # Clear any cached data (but keep persistent data in PostgreSQL)
@@ -960,4 +1128,6 @@ class LangGraphCheckpointMemory(BaseMemory):
     
     def __del__(self):
         """Destructor to ensure cleanup."""
-        self.cleanup()
+        if hasattr(self, '_connection_pool') and self._connection_pool:
+            # Note: We can't call async cleanup in __del__, so just log
+            logger.warning("Memory object deleted with active connection pool - call cleanup() explicitly")

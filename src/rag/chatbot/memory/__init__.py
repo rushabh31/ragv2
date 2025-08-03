@@ -3,9 +3,8 @@ Memory management components
 """
 
 from .base_memory import *
-from .langgraph_memory import *
 from .memory_factory import *
-from .memory_singleton import *
 from .simple_memory import *
+from .langgraph_checkpoint_memory import *
 
-__all__ = ['BaseMemory', 'LangGraphMemory', 'MemoryFactory', 'MemorySingleton', 'SimpleMemory']
+__all__ = ['BaseMemory', 'MemoryFactory', 'SimpleMemory', 'LangGraphCheckpointMemory']

@@ -73,6 +73,13 @@ class ChatbotService:
         async with cls._memory_lock:
             if cls._memory_instance is not None:
                 logger.info("Resetting singleton memory instance")
+                # Call cleanup if the memory instance supports it
+                if hasattr(cls._memory_instance, 'cleanup'):
+                    try:
+                        await cls._memory_instance.cleanup()
+                        logger.info("Memory instance cleanup completed")
+                    except Exception as e:
+                        logger.error(f"Error during memory cleanup: {e}")
                 cls._memory_instance = None
     
     async def _init_components(self):
@@ -133,6 +140,8 @@ class ChatbotService:
                          use_history: bool = True,
                          use_chat_history: bool = False,
                          chat_history_days: int = 7,
+                         enable_memory: Optional[bool] = None,
+                         enable_chat_history: Optional[bool] = None,
                          metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Process a chat query and generate a response.
         
@@ -144,6 +153,8 @@ class ChatbotService:
             use_history: Whether to use conversation history
             use_chat_history: Whether to include chat history from other sessions by SOEID
             chat_history_days: Number of days of chat history to include (1-365)
+            enable_memory: Override memory enabled setting for this request
+            enable_chat_history: Override chat history enabled setting for this request
             metadata: Additional metadata for the query
             
         Returns:
@@ -152,6 +163,16 @@ class ChatbotService:
         # Get or create session
         session_id = await self._get_or_create_session(session_id, user_id)
         
+        # Initialize components to access memory for enable/disable
+        await self._init_components()
+        
+        # Handle memory enable/disable overrides
+        if enable_memory is not None and hasattr(self._memory, 'set_enabled'):
+            self._memory.set_enabled(enable_memory)
+        
+        if enable_chat_history is not None and hasattr(self._memory, 'set_chat_history_enabled'):
+            self._memory.set_chat_history_enabled(enable_chat_history)
+        
         try:
             # Use the workflow manager to process the query using LangGraph
             workflow_params = {
@@ -159,6 +180,8 @@ class ChatbotService:
                 "use_history": use_history,
                 "use_chat_history": use_chat_history,
                 "chat_history_days": chat_history_days,
+                "enable_memory": enable_memory,
+                "enable_chat_history": enable_chat_history,
                 "metadata": metadata or {}
             }
             
@@ -533,6 +556,8 @@ class ChatbotService:
             # Get basic memory info
             memory_type = type(self._memory).__name__
             store_type = getattr(self._memory, '_store_type', 'unknown')
+            memory_enabled = getattr(self._memory, 'is_enabled', lambda: True)()
+            chat_history_enabled = getattr(self._memory, 'is_chat_history_enabled', lambda: True)()
             
             # Initialize counters
             total_sessions = 0
@@ -572,6 +597,8 @@ class ChatbotService:
             return {
                 "memory_type": memory_type,
                 "store_type": store_type,
+                "memory_enabled": memory_enabled,
+                "chat_history_enabled": chat_history_enabled,
                 "total_sessions": total_sessions,
                 "total_messages": total_messages,
                 "unique_soeids": len(unique_soeids),
@@ -584,6 +611,8 @@ class ChatbotService:
             return {
                 "memory_type": "unknown",
                 "store_type": "unknown",
+                "memory_enabled": False,
+                "chat_history_enabled": False,
                 "total_sessions": 0,
                 "total_messages": 0,
                 "unique_soeids": 0,
@@ -591,3 +620,47 @@ class ChatbotService:
                 "newest_session": None,
                 "metadata": {"error": str(e)}
             }
+    
+    async def set_memory_enabled(self, enabled: bool) -> bool:
+        """Enable or disable memory system.
+        
+        Args:
+            enabled: Whether to enable memory
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        await self._init_components()
+        try:
+            if hasattr(self._memory, 'set_enabled'):
+                self._memory.set_enabled(enabled)
+                logger.info(f"Memory enabled set to: {enabled}")
+                return True
+            else:
+                logger.warning("Memory implementation does not support enable/disable")
+                return False
+        except Exception as e:
+            logger.error(f"Failed to set memory enabled: {str(e)}", exc_info=True)
+            return False
+    
+    async def set_chat_history_enabled(self, enabled: bool) -> bool:
+        """Enable or disable chat history.
+        
+        Args:
+            enabled: Whether to enable chat history
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        await self._init_components()
+        try:
+            if hasattr(self._memory, 'set_chat_history_enabled'):
+                self._memory.set_chat_history_enabled(enabled)
+                logger.info(f"Chat history enabled set to: {enabled}")
+                return True
+            else:
+                logger.warning("Memory implementation does not support chat history enable/disable")
+                return False
+        except Exception as e:
+            logger.error(f"Failed to set chat history enabled: {str(e)}", exc_info=True)
+            return False

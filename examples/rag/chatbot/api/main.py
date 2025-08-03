@@ -1,6 +1,7 @@
 import logging
 import os
 import uvicorn
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
@@ -31,11 +32,30 @@ config_manager = ConfigManager()
 config = config_manager.get_config()
 app_config = config.get("api", {}).get("chatbot", {})
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application lifespan for resource cleanup."""
+    # Startup
+    logger.info("Starting up RAG Chatbot API...")
+    
+    yield
+    
+    # Shutdown - cleanup memory connections
+    logger.info("Shutting down RAG Chatbot API...")
+    try:
+        from .service import ChatbotService
+        # Reset singleton to trigger cleanup
+        await ChatbotService.reset_singleton_memory()
+        logger.info("Memory cleanup completed")
+    except Exception as e:
+        logger.error(f"Error during memory cleanup: {e}")
+
 # Create FastAPI app
 app = FastAPI(
     title="RAG Chatbot API",
     description="API for conversational retrieval and question answering",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 # Configure middleware using the factory

@@ -37,6 +37,8 @@ async def send_message(
     use_history: bool = Form(True),
     use_chat_history: bool = Form(False),
     chat_history_days: int = Form(7),
+    enable_memory: Optional[bool] = Form(None),
+    enable_chat_history: Optional[bool] = Form(None),
     metadata_json: Optional[str] = Form(None),
     soeid: str = Header(...),
     service: ChatbotService = Depends(get_chatbot_service)
@@ -64,6 +66,8 @@ async def send_message(
             use_history=use_history,
             use_chat_history=use_chat_history,
             chat_history_days=chat_history_days,
+            enable_memory=enable_memory,
+            enable_chat_history=enable_chat_history,
             metadata=metadata
         )
         
@@ -221,6 +225,32 @@ async def get_memory_stats(
     """Get memory system statistics."""
     result = await service.get_memory_stats()
     return MemoryStatsResponse(**result)
+
+
+@router.post("/memory/enable")
+async def set_memory_enabled(
+    enabled: bool = Form(...),
+    service: ChatbotService = Depends(get_chatbot_service)
+):
+    """Enable or disable the memory system."""
+    success = await service.set_memory_enabled(enabled)
+    return {
+        "success": success,
+        "message": f"Memory {'enabled' if enabled else 'disabled'}" if success else "Failed to update memory setting"
+    }
+
+
+@router.post("/memory/chat-history/enable")
+async def set_chat_history_enabled(
+    enabled: bool = Form(...),
+    service: ChatbotService = Depends(get_chatbot_service)
+):
+    """Enable or disable chat history functionality."""
+    success = await service.set_chat_history_enabled(enabled)
+    return {
+        "success": success,
+        "message": f"Chat history {'enabled' if enabled else 'disabled'}" if success else "Failed to update chat history setting"
+    }
 
 
 @router.get("/sessions/{soeid}/history", response_model=SOEIDHistoryResponse)
