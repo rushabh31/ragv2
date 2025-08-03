@@ -110,7 +110,7 @@ class LangGraphCheckpointMemory(BaseMemory):
                     raise MemoryError("PostgreSQL connection string is required for postgres store type")
                 
                 # For PostgreSQL, we need to use the context manager for each operation
-                # Store the context manager factory, not a persistent connection
+                # Store the connection string for creating connections as needed
                 self._postgres_connection_string = connection_string
                 
                 # Test the connection and set up schema
@@ -125,8 +125,8 @@ class LangGraphCheckpointMemory(BaseMemory):
                     logger.info(f"PostgreSQL checkpointer initialized: {type(postgres_saver)}")
                     logger.info("PostgreSQL connection tested successfully")
                 
-                # Return None - we'll create connections as needed
-                return None
+                # Return a placeholder - we'll use context managers for actual operations
+                return "postgres_checkpointer"
             else:
                 raise MemoryError(f"Unsupported store type: {self._store_type}")
         except Exception as e:
@@ -263,15 +263,18 @@ class LangGraphCheckpointMemory(BaseMemory):
             if self._store_type == "postgres":
                 with PostgresSaver.from_conn_string(self._postgres_connection_string) as checkpointer:
                     checkpointer.put(config, checkpoint_data, {}, {})
+                    logger.debug(f"Successfully stored checkpoint in PostgreSQL for session {session_id}")
             else:
                 self._checkpointer.put(config, checkpoint_data, {}, {})
+                logger.debug(f"Successfully stored checkpoint in in-memory storage for session {session_id}")
             
-            # Also store in a simple format for reliable retrieval
-            if not hasattr(self, '_simple_storage'):
-                self._simple_storage = {}
-            self._simple_storage[session_id] = all_messages
+            # Update internal cache for performance (but don't rely on it for persistence)
+            if not hasattr(self, '_session_messages'):
+                self._session_messages = {}
+            session_key = f"session_{session_id}"
+            self._session_messages[session_key] = all_messages
             
-            logger.debug(f"Added message to checkpoint for session {session_id}")
+            logger.info(f"Added message to checkpoint for session {session_id}, total messages: {len(all_messages)}")
             return True
             
         except Exception as e:
@@ -291,19 +294,21 @@ class LangGraphCheckpointMemory(BaseMemory):
             List of messages
         """
         try:
-            # Always try PostgreSQL first for persistence
+            # Always try to get from persistent storage first
             config = await self._get_thread_config(session_id)
             logger.debug(f"Getting messages for session {session_id} with config: {config}")
             
+            checkpoint = None
             # Use context manager for PostgreSQL
             if self._store_type == "postgres":
                 with PostgresSaver.from_conn_string(self._postgres_connection_string) as checkpointer:
                     checkpoint = checkpointer.get(config)
+                    logger.debug(f"Retrieved checkpoint from PostgreSQL: {checkpoint is not None}")
             else:
                 checkpoint = self._checkpointer.get(config)
-            logger.debug(f"Retrieved checkpoint: {checkpoint}")
+                logger.debug(f"Retrieved checkpoint from in-memory: {checkpoint is not None}")
             
-            # If we got data from PostgreSQL, cache it and return it
+            # If we got data from persistent storage, return it
             if checkpoint:
                 # Handle both dict and object formats
                 channel_values = None
@@ -314,13 +319,14 @@ class LangGraphCheckpointMemory(BaseMemory):
                 
                 if channel_values:
                     messages = channel_values.get("messages", [])
-                    if isinstance(messages, list) and messages:
-                        logger.debug(f"Retrieved {len(messages)} messages from PostgreSQL for session {session_id}")
+                    if isinstance(messages, list):
+                        logger.info(f"Retrieved {len(messages)} messages from persistent storage for session {session_id}")
                         
-                        # Cache in memory for performance
-                        if not hasattr(self, '_simple_storage'):
-                            self._simple_storage = {}
-                        self._simple_storage[session_id] = messages
+                        # Update cache for performance
+                        if not hasattr(self, '_session_messages'):
+                            self._session_messages = {}
+                        session_key = f"session_{session_id}"
+                        self._session_messages[session_key] = messages
                         
                         # Apply limit if specified
                         if limit and len(messages) > limit:
@@ -328,19 +334,8 @@ class LangGraphCheckpointMemory(BaseMemory):
                         
                         return messages
             
-            # Fallback to internal storage if PostgreSQL has no data
-            if hasattr(self, '_simple_storage') and session_id in self._simple_storage:
-                messages = self._simple_storage[session_id]
-                logger.debug(f"Retrieved {len(messages)} messages from internal storage fallback for session {session_id}")
-                
-                # Apply limit if specified
-                if limit and len(messages) > limit:
-                    messages = messages[-limit:]
-                
-                return messages
-            
-            # No data found in PostgreSQL or internal storage
-            logger.debug(f"No messages found for session {session_id}")
+            # No data found in persistent storage
+            logger.info(f"No messages found in persistent storage for session {session_id}")
             return []
             
         except Exception as e:
@@ -958,11 +953,10 @@ class LangGraphCheckpointMemory(BaseMemory):
         if hasattr(self, '_postgres_connection_string'):
             logger.info("PostgreSQL memory cleanup - no persistent connections to close")
         
-        # Clear any cached data
-        if hasattr(self, '_simple_storage'):
-            self._simple_storage.clear()
+        # Clear any cached data (but keep persistent data in PostgreSQL)
         if hasattr(self, '_session_messages'):
             self._session_messages.clear()
+            logger.debug("Cleared session message cache")
     
     def __del__(self):
         """Destructor to ensure cleanup."""
