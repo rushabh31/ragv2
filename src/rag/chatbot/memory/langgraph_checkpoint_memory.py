@@ -6,23 +6,24 @@ import uuid
 from typing import Dict, Any, List, Optional, Union
 from datetime import datetime, timedelta
 
-# Import LangGraph checkpoint components
+logger = logging.getLogger(__name__)
+
+# Import LangGraph checkpoint components following playbook patterns
 try:
     from langgraph.checkpoint.memory import InMemorySaver
-    from langgraph.checkpoint.base import BaseCheckpointSaver
-    LANGGRAPH_CHECKPOINT_AVAILABLE = True
-except ImportError:
-    LANGGRAPH_CHECKPOINT_AVAILABLE = False
-    InMemorySaver = None
-    BaseCheckpointSaver = None
-
-# Try to import PostgreSQL checkpoint saver
-try:
     from langgraph.checkpoint.postgres import PostgresSaver
+    from langgraph.checkpoint.base import BaseCheckpointSaver
+    from langgraph.graph import StateGraph
+    LANGGRAPH_CHECKPOINT_AVAILABLE = True
     POSTGRES_CHECKPOINT_AVAILABLE = True
-except ImportError:
-    PostgresSaver = None
+except ImportError as e:
+    logger.warning(f"LangGraph checkpoint components not available: {e}")
+    LANGGRAPH_CHECKPOINT_AVAILABLE = False
     POSTGRES_CHECKPOINT_AVAILABLE = False
+    InMemorySaver = None
+    PostgresSaver = None
+    BaseCheckpointSaver = None
+    StateGraph = None
 
 # Import LangGraph store components for long-term memory
 try:
@@ -48,21 +49,31 @@ logger = logging.getLogger(__name__)
 
 
 class LangGraphCheckpointMemory(BaseMemory):
-    """Enhanced LangGraph memory implementation using checkpointers for conversation history.
+    """Enhanced LangGraph memory implementation following the official playbook patterns.
     
-    This implementation uses:
-    - LangGraph checkpointers for conversation history (thread-scoped memory)
-    - LangGraph stores for long-term memory (cross-thread memory)
-    - Support for both in-memory and PostgreSQL storage
+    This implementation follows LangGraph best practices:
+    - Uses InMemorySaver for development and PostgresSaver for production
+    - Implements proper thread-scoped memory with configurable thread_id
+    - Supports memory toggle via configuration (enabled/disabled)
+    - Follows the playbook patterns for checkpoint management
+    - Provides fallback to NoCheckpointMemory when disabled
     """
     
     def __init__(self, config: Dict[str, Any] = None):
-        """Initialize the LangGraph checkpoint memory system.
+        """Initialize the LangGraph checkpoint memory system following playbook patterns.
         
         Args:
             config: Configuration dictionary for the memory system
         """
         super().__init__(config)
+        
+        # Configuration
+        self._config = config or {}
+        
+        # Check if memory is enabled (following playbook pattern for disabling memory)
+        if not self._config.get("enabled", True):
+            logger.info("LangGraph checkpoint memory is disabled via configuration")
+            return
         
         # Check if LangGraph checkpoint is available
         if not LANGGRAPH_CHECKPOINT_AVAILABLE:
@@ -70,12 +81,10 @@ class LangGraphCheckpointMemory(BaseMemory):
             logger.error(error_msg)
             raise MemoryError(error_msg)
         
-        # Configuration
-        self._config = config or {}
         self._store_type = self._config.get("store_type", "in_memory")
         self._postgres_config = self._config.get("postgres", {})
         
-        # Initialize checkpointer for conversation history
+        # Initialize checkpointer for conversation history (following playbook patterns)
         self._checkpointer = self._init_checkpointer()
         
         # Initialize store for long-term memory (if available)
@@ -87,7 +96,7 @@ class LangGraphCheckpointMemory(BaseMemory):
         self._sessions: Dict[str, Dict[str, Any]] = {}
         self._lock = asyncio.Lock()
         
-        logger.info(f"LangGraph checkpoint memory system initialized with {self._store_type} storage")
+        logger.info(f"LangGraph checkpoint memory system initialized with {self._store_type} storage following playbook patterns")
     
     def _init_checkpointer(self) -> BaseCheckpointSaver:
         """Initialize the appropriate LangGraph checkpointer.
@@ -176,19 +185,17 @@ class LangGraphCheckpointMemory(BaseMemory):
         return PostgresStore.from_conn_string(connection_string)
     
     async def _get_thread_config(self, session_id: str) -> Dict[str, Any]:
-        """Get thread configuration for a session.
+        """Get thread configuration for a session following LangGraph patterns.
         
         Args:
             session_id: Session identifier
             
         Returns:
-            Thread configuration dictionary
+            Thread configuration dictionary with proper configurable structure
         """
         return {
             "configurable": {
-                "thread_id": session_id,
-                "checkpoint_ns": "",
-                "checkpoint_id": None
+                "thread_id": session_id
             }
         }
     
@@ -246,26 +253,37 @@ class LangGraphCheckpointMemory(BaseMemory):
                 self._session_messages = {}
             self._session_messages[session_key] = all_messages
             
-            # Create a unique checkpoint ID for this update
-            checkpoint_id = str(uuid.uuid4())
-            
-            # Create checkpoint data with proper structure
+            # Create checkpoint data following LangGraph patterns
             checkpoint_data = {
-                "v": 1,
-                "id": checkpoint_id,
-                "ts": datetime.now().isoformat(),
-                "channel_values": {"messages": all_messages},
-                "channel_versions": {"messages": len(all_messages)},
-                "versions_seen": {}
+                "messages": all_messages,
+                "session_id": session_id,
+                "last_updated": datetime.now().isoformat()
             }
             
-            # Store the checkpoint using sync method with context manager
+            # Store the checkpoint using LangGraph checkpointer patterns
             if self._store_type == "postgres":
                 with PostgresSaver.from_conn_string(self._postgres_connection_string) as checkpointer:
-                    checkpointer.put(config, checkpoint_data, {}, {})
+                    # Use proper LangGraph checkpoint structure
+                    checkpoint = {
+                        "v": 1,
+                        "ts": datetime.now().isoformat(),
+                        "id": str(uuid.uuid4()),
+                        "channel_values": checkpoint_data,
+                        "channel_versions": {"messages": len(all_messages)},
+                        "versions_seen": {}
+                    }
+                    checkpointer.put(config, checkpoint, {}, {})
                     logger.debug(f"Successfully stored checkpoint in PostgreSQL for session {session_id}")
             else:
-                self._checkpointer.put(config, checkpoint_data, {}, {})
+                checkpoint = {
+                    "v": 1,
+                    "ts": datetime.now().isoformat(),
+                    "id": str(uuid.uuid4()),
+                    "channel_values": checkpoint_data,
+                    "channel_versions": {"messages": len(all_messages)},
+                    "versions_seen": {}
+                }
+                self._checkpointer.put(config, checkpoint, {}, {})
                 logger.debug(f"Successfully stored checkpoint in in-memory storage for session {session_id}")
             
             # Update internal cache for performance (but don't rely on it for persistence)

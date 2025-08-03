@@ -146,19 +146,15 @@ chatbot:
     templates_dir: config/prompts/chatbot
     template: rag_prompt.jinja2
   memory:
-    # Memory type: "simple", "mem0", "langgraph", or "langgraph_checkpoint"
+    enabled: true
+    # Memory type: "simple", "langgraph", "langgraph_checkpoint", "advanced_langgraph_checkpoint", "no_checkpoint"
     type: advanced_langgraph_checkpoint
     # LangGraph memory settings
     store_type: postgres  # "in_memory" or "postgres"
-    embedding_dimensions: 384
     max_history: 20
     # PostgreSQL settings (only used if store_type is "postgres")
     postgres:
       connection_string: "postgresql://rushabhsmacbook@localhost:5432/langgraph_memory_db"
-    # Legacy settings for simple memory
-    max_messages: 20
-    message_expiry_minutes: 60
-    max_sessions: 1000
 
 # Vision model configuration
 vision:

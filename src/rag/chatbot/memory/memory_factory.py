@@ -18,7 +18,6 @@ class MemoryFactory:
     
     _MEMORY_TYPES = {
         "simple": SimpleMemory,
-        "mem0": Mem0Memory,
         "langgraph": LangGraphMemory,
         "langgraph_checkpoint": LangGraphCheckpointMemory,
         "advanced_langgraph_checkpoint": AdvancedLangGraphCheckpointMemory,
@@ -39,6 +38,10 @@ class MemoryFactory:
             MemoryError: If the memory type is not supported or initialization fails
         """
         try:
+            if not config.get("enabled", True):
+                logger.info("Memory is disabled, using NoCheckpointMemory")
+                return NoCheckpointMemory(config)
+            
             memory_type = config.get("type", "simple")
             
             if memory_type not in cls._MEMORY_TYPES:
@@ -80,4 +83,4 @@ class MemoryFactory:
             raise ValueError(f"Memory class must inherit from BaseMemory: {memory_class}")
         
         cls._MEMORY_TYPES[name] = memory_class
-        logger.info(f"Registered new memory type: {name}") 
+        logger.info(f"Registered new memory type: {name}")  
