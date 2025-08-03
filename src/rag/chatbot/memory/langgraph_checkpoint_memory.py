@@ -3,6 +3,7 @@
 import logging
 import asyncio
 import uuid
+import json
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
@@ -143,12 +144,13 @@ class LangGraphCheckpointMemory(BaseMemory):
                 if ASYNC_POSTGRES_CHECKPOINT_AVAILABLE:
                     await self._init_connection_pool()
                     
-                    # Initialize async checkpointer and test setup
+                    # Initialize async checkpointer and test setup with custom schema
                     async with self._get_checkpointer() as checkpointer:
                         if checkpointer:
                             try:
                                 await checkpointer.setup()
-                                logger.info("PostgreSQL database schema setup completed")
+                                schema_name = self._postgres_config.get("schema_name", "public")
+                                logger.info(f"PostgreSQL database schema '{schema_name}' setup completed")
                             except Exception as setup_error:
                                 logger.warning(f"PostgreSQL schema setup failed: {setup_error}")
                                 # Continue anyway, tables might already exist
@@ -235,11 +237,39 @@ class LangGraphCheckpointMemory(BaseMemory):
             yield self._checkpointer
         elif self._store_type == "postgres":
             if ASYNC_POSTGRES_CHECKPOINT_AVAILABLE and self._connection_pool:
-                async with AsyncPostgresSaver.from_conn_string(self._connection_string) as checkpointer:
+                # Get schema configuration
+                schema_name = self._postgres_config.get("schema_name", "public")
+                
+                # Create connection with custom schema
+                connection_kwargs = {
+                    "autocommit": True,
+                    "prepare_threshold": 0,
+                    "row_factory": "dict_row"
+                }
+                
+                # Modify connection string to include schema in search_path
+                if schema_name and schema_name != "public":
+                    if "?" in self._connection_string:
+                        schema_connection_string = f"{self._connection_string}&options=-c search_path={schema_name},public"
+                    else:
+                        schema_connection_string = f"{self._connection_string}?options=-c search_path={schema_name},public"
+                else:
+                    schema_connection_string = self._connection_string
+                
+                async with AsyncPostgresSaver.from_conn_string(schema_connection_string) as checkpointer:
                     yield checkpointer
             elif hasattr(self, '_postgres_connection_string'):
                 # Fallback to sync context manager
-                with PostgresSaver.from_conn_string(self._postgres_connection_string) as checkpointer:
+                schema_name = self._postgres_config.get("schema_name", "public")
+                if schema_name and schema_name != "public":
+                    if "?" in self._postgres_connection_string:
+                        schema_connection_string = f"{self._postgres_connection_string}&options=-c search_path={schema_name},public"
+                    else:
+                        schema_connection_string = f"{self._postgres_connection_string}?options=-c search_path={schema_name},public"
+                else:
+                    schema_connection_string = self._postgres_connection_string
+                
+                with PostgresSaver.from_conn_string(schema_connection_string) as checkpointer:
                     yield checkpointer
             else:
                 yield None
@@ -357,17 +387,31 @@ class LangGraphCheckpointMemory(BaseMemory):
                 self._session_messages = {}
             self._session_messages[session_key] = all_messages
             
-            # Create a unique checkpoint ID for this update
+            # Create a unique checkpoint ID for this update  
             checkpoint_id = str(uuid.uuid4())
             
-            # Create checkpoint data with proper structure
+            # Create proper LangGraph checkpoint data structure
+            # The checkpoint should contain the actual conversation state
             checkpoint_data = {
-                "v": 1,
+                "v": 1,  # Version
                 "id": checkpoint_id,
                 "ts": datetime.now().isoformat(),
-                "channel_values": {"messages": all_messages},
-                "channel_versions": {"messages": len(all_messages)},
-                "versions_seen": {}
+                "channel_values": {
+                    "messages": all_messages,
+                    "session_id": session_id,
+                    "user_id": metadata.get("soeid") if metadata else None,
+                    "last_updated": datetime.now().isoformat()
+                },
+                "channel_versions": {
+                    "messages": len(all_messages),
+                    "session_id": 1,
+                    "user_id": 1,
+                    "last_updated": 1
+                },
+                "versions_seen": {
+                    "messages": len(all_messages)
+                },
+                "pending_sends": []
             }
             
             # Store the checkpoint using async context manager
@@ -375,10 +419,14 @@ class LangGraphCheckpointMemory(BaseMemory):
                 if checkpointer:
                     if ASYNC_POSTGRES_CHECKPOINT_AVAILABLE and self._store_type == "postgres":
                         await checkpointer.aput(config, checkpoint_data, {}, {})
-                        logger.debug(f"Successfully stored checkpoint in async PostgreSQL for session {session_id}")
+                        logger.info(f"Successfully stored checkpoint in async PostgreSQL for session {session_id}")
+                        logger.debug(f"Checkpoint data: {json.dumps(checkpoint_data, indent=2, default=str)}")
                     else:
                         checkpointer.put(config, checkpoint_data, {}, {})
-                        logger.debug(f"Successfully stored checkpoint for session {session_id}")
+                        logger.info(f"Successfully stored checkpoint for session {session_id}")
+                        logger.debug(f"Checkpoint data: {json.dumps(checkpoint_data, indent=2, default=str)}")
+                else:
+                    logger.error("No checkpointer available for storing data")
             
             # Update internal cache for performance (but don't rely on it for persistence)
             if not hasattr(self, '_session_messages'):
@@ -425,6 +473,9 @@ class LangGraphCheckpointMemory(BaseMemory):
                         logger.debug(f"Retrieved checkpoint: {checkpoint is not None}")
             
             if checkpoint:
+                logger.debug(f"Checkpoint type: {type(checkpoint)}")
+                logger.debug(f"Checkpoint content: {json.dumps(checkpoint, indent=2, default=str) if isinstance(checkpoint, dict) else str(checkpoint)}")
+                
                 # Handle both dict and object formats
                 channel_values = None
                 if isinstance(checkpoint, dict):
@@ -432,8 +483,13 @@ class LangGraphCheckpointMemory(BaseMemory):
                 elif hasattr(checkpoint, 'channel_values'):
                     channel_values = checkpoint.channel_values
                 
+                logger.debug(f"Channel values type: {type(channel_values)}")
+                logger.debug(f"Channel values: {channel_values}")
+                
                 if channel_values:
                     messages = channel_values.get("messages", [])
+                    logger.debug(f"Messages type: {type(messages)}, count: {len(messages) if isinstance(messages, list) else 'not a list'}")
+                    
                     if isinstance(messages, list):
                         logger.info(f"Retrieved {len(messages)} messages from persistent storage for session {session_id}")
                         
@@ -461,6 +517,10 @@ class LangGraphCheckpointMemory(BaseMemory):
                             messages = messages[-limit:]
                         
                         return messages
+                    else:
+                        logger.warning(f"Messages is not a list: {type(messages)}")
+                else:
+                    logger.warning("No channel_values found in checkpoint")
             
             logger.info(f"No messages found in persistent storage for session {session_id}")
             return []
