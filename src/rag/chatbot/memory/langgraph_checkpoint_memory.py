@@ -1,4 +1,4 @@
-"""Enhanced LangGraph memory implementation using checkpointers for conversation history."""
+"""Enhanced LangGraph memory implementation following official playbook patterns."""
 
 import logging
 import asyncio
@@ -6,63 +6,56 @@ import uuid
 from typing import Dict, Any, List, Optional, Union
 from datetime import datetime, timedelta
 
-# Import LangGraph checkpoint components
+logger = logging.getLogger(__name__)
+
+# Import LangGraph checkpoint components following playbook patterns
 try:
     from langgraph.checkpoint.memory import InMemorySaver
-    from langgraph.checkpoint.base import BaseCheckpointSaver
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+    from langgraph.graph import StateGraph, MessagesState, START
     LANGGRAPH_CHECKPOINT_AVAILABLE = True
-except ImportError:
-    LANGGRAPH_CHECKPOINT_AVAILABLE = False
-    InMemorySaver = None
-    BaseCheckpointSaver = None
-
-# Try to import PostgreSQL checkpoint saver
-try:
-    from langgraph.checkpoint.postgres import PostgresSaver
     POSTGRES_CHECKPOINT_AVAILABLE = True
-except ImportError:
-    PostgresSaver = None
+except ImportError as e:
+    logger.warning(f"LangGraph checkpoint components not available: {e}")
+    LANGGRAPH_CHECKPOINT_AVAILABLE = False
     POSTGRES_CHECKPOINT_AVAILABLE = False
-
-# Import LangGraph store components for long-term memory
-try:
-    from langgraph.store.memory import InMemoryStore
-    from langgraph.store.base import BaseStore
-    LANGGRAPH_STORE_AVAILABLE = True
-except ImportError:
-    LANGGRAPH_STORE_AVAILABLE = False
-    InMemoryStore = None
-    BaseStore = None
-
-try:
-    from langgraph.store.postgres import PostgresStore
-    POSTGRES_STORE_AVAILABLE = True
-except ImportError:
-    PostgresStore = None
-    POSTGRES_STORE_AVAILABLE = False
+    InMemorySaver = None
+    AsyncPostgresSaver = None
+    StateGraph = None
+    MessagesState = None
+    START = None
 
 from src.rag.chatbot.memory.base_memory import BaseMemory
 from src.rag.core.exceptions.exceptions import MemoryError
 
-logger = logging.getLogger(__name__)
-
 
 class LangGraphCheckpointMemory(BaseMemory):
-    """Enhanced LangGraph memory implementation using checkpointers for conversation history.
+    """Enhanced LangGraph memory implementation following the official playbook patterns.
     
-    This implementation uses:
-    - LangGraph checkpointers for conversation history (thread-scoped memory)
-    - LangGraph stores for long-term memory (cross-thread memory)
-    - Support for both in-memory and PostgreSQL storage
+    This implementation follows LangGraph best practices from the playbook:
+    - Uses InMemorySaver for development and AsyncPostgresSaver for production
+    - Implements proper StateGraph with MessagesState pattern
+    - Uses async context manager pattern for PostgreSQL connections
+    - Calls await checkpointer.setup() appropriately for database initialization
+    - Supports memory toggle via configuration (enabled/disabled)
+    - Follows thread-scoped memory with proper configurable thread_id
     """
     
     def __init__(self, config: Dict[str, Any] = None):
-        """Initialize the LangGraph checkpoint memory system.
+        """Initialize the LangGraph checkpoint memory system following playbook patterns.
         
         Args:
             config: Configuration dictionary for the memory system
         """
         super().__init__(config)
+        
+        # Configuration
+        self._config = config or {}
+        
+        # Check if memory is enabled (following playbook pattern for disabling memory)
+        if not self._config.get("enabled", True):
+            logger.info("LangGraph checkpoint memory is disabled via configuration")
+            return
         
         # Check if LangGraph checkpoint is available
         if not LANGGRAPH_CHECKPOINT_AVAILABLE:
@@ -70,37 +63,46 @@ class LangGraphCheckpointMemory(BaseMemory):
             logger.error(error_msg)
             raise MemoryError(error_msg)
         
-        # Configuration
-        self._config = config or {}
         self._store_type = self._config.get("store_type", "in_memory")
         self._postgres_config = self._config.get("postgres", {})
         
-        # Initialize checkpointer for conversation history
-        self._checkpointer = self._init_checkpointer()
+        # Initialize checkpointer following playbook patterns (will be done async)
+        self._checkpointer = None
+        self._initialized = False
         
-        # Initialize store for long-term memory (if available)
-        self._store = None
-        if LANGGRAPH_STORE_AVAILABLE:
-            self._store = self._init_store()
+        # Initialize the StateGraph following playbook patterns
+        self._graph = self._init_graph()
         
         # Session management
         self._sessions: Dict[str, Dict[str, Any]] = {}
         self._lock = asyncio.Lock()
         
-        logger.info(f"LangGraph checkpoint memory system initialized with {self._store_type} storage")
+        logger.info(f"LangGraph checkpoint memory system created with {self._store_type} storage following playbook patterns")
     
-    def _init_checkpointer(self) -> BaseCheckpointSaver:
-        """Initialize the appropriate LangGraph checkpointer.
+    async def _ensure_initialized(self):
+        """Ensure the memory system is properly initialized with async patterns."""
+        if self._initialized:
+            return
+        
+        # Initialize checkpointer following async playbook patterns
+        self._checkpointer = await self._init_checkpointer()
+        self._initialized = True
+        logger.info("LangGraph checkpoint memory system async initialization completed")
+    
+    async def _init_checkpointer(self):
+        """Initialize the appropriate LangGraph checkpointer following playbook patterns.
         
         Returns:
-            BaseCheckpointSaver: The initialized checkpointer
+            Checkpointer instance or connection string for AsyncPostgresSaver
         """
         try:
             if self._store_type == "in_memory":
-                return InMemorySaver()
+                checkpointer = InMemorySaver()
+                logger.info("Initialized InMemorySaver checkpointer")
+                return checkpointer
             elif self._store_type == "postgres":
                 if not POSTGRES_CHECKPOINT_AVAILABLE:
-                    logger.warning("PostgreSQL checkpointer is not available. Falling back to in-memory checkpointer.")
+                    logger.warning("AsyncPostgresSaver checkpointer is not available. Falling back to in-memory checkpointer.")
                     self._store_type = "in_memory"
                     return InMemorySaver()
                 
@@ -109,24 +111,17 @@ class LangGraphCheckpointMemory(BaseMemory):
                 if not connection_string:
                     raise MemoryError("PostgreSQL connection string is required for postgres store type")
                 
-                # For PostgreSQL, we need to use the context manager for each operation
-                # Store the connection string for creating connections as needed
                 self._postgres_connection_string = connection_string
                 
-                # Test the connection and set up schema
-                with PostgresSaver.from_conn_string(connection_string) as postgres_saver:
-                    try:
-                        postgres_saver.setup()
-                        logger.info("PostgreSQL database schema setup completed")
-                    except Exception as setup_error:
-                        logger.warning(f"PostgreSQL schema setup failed: {setup_error}")
-                        # Continue anyway, tables might already exist
-                    
-                    logger.info(f"PostgreSQL checkpointer initialized: {type(postgres_saver)}")
-                    logger.info("PostgreSQL connection tested successfully")
+                try:
+                    async with AsyncPostgresSaver.from_conn_string(connection_string) as checkpointer:
+                        await checkpointer.setup()
+                        logger.info("AsyncPostgresSaver database schema setup completed successfully")
+                except Exception as setup_error:
+                    logger.warning(f"AsyncPostgresSaver schema setup failed (tables may already exist): {setup_error}")
                 
-                # Return a placeholder - we'll use context managers for actual operations
-                return "postgres_checkpointer"
+                logger.info("AsyncPostgresSaver checkpointer initialized with async context manager pattern")
+                return connection_string  # Return connection string for async context manager usage
             else:
                 raise MemoryError(f"Unsupported store type: {self._store_type}")
         except Exception as e:
@@ -134,61 +129,63 @@ class LangGraphCheckpointMemory(BaseMemory):
             logger.error(error_msg)
             raise MemoryError(error_msg) from e
     
-    def _init_store(self) -> Optional[BaseStore]:
-        """Initialize the appropriate LangGraph store for long-term memory.
+    def _init_graph(self):
+        """Initialize StateGraph following playbook patterns.
         
         Returns:
-            BaseStore: The initialized store or None if not available
+            Compiled StateGraph with checkpointer or uncompiled builder for PostgreSQL
         """
         try:
-            if self._store_type == "in_memory":
-                return self._init_in_memory_store()
-            elif self._store_type == "postgres":
-                if not POSTGRES_STORE_AVAILABLE:
-                    logger.warning("PostgreSQL store is not available. Using in-memory store for long-term memory.")
-                    return self._init_in_memory_store()
-                return self._init_postgres_store()
+            # Define a simple call_model function following playbook patterns
+            def call_model(state):
+                """Simple model function that returns the state unchanged."""
+                return state
+            
+            if MessagesState is not None and START is not None:
+                # Use proper MessagesState pattern from playbook
+                builder = StateGraph(MessagesState)
+                builder.add_node("call_model", call_model)
+                builder.add_edge(START, "call_model")
+                logger.info("StateGraph initialized with MessagesState pattern")
             else:
-                logger.warning(f"Unsupported store type for long-term memory: {self._store_type}")
-                return None
+                # Fallback to dict state if LangGraph components are not fully available
+                logger.warning("MessagesState or START not available, using simple dict state")
+                if StateGraph is not None:
+                    builder = StateGraph(dict)
+                    builder.add_node("call_model", call_model)
+                    # Use string literal instead of START constant if not available
+                    builder.add_edge("__start__", "call_model")
+                    logger.info("StateGraph initialized with dict state and string edge")
+                else:
+                    raise MemoryError("StateGraph is not available - LangGraph not properly installed")
+            
+            # Compile with appropriate checkpointer following playbook patterns
+            if self._store_type == "postgres":
+                # For PostgreSQL, return uncompiled builder for context manager usage
+                logger.info("StateGraph configured for AsyncPostgresSaver checkpointer with async context manager pattern")
+                return builder
+            else:
+                # For in-memory, compile immediately with checkpointer
+                graph = builder.compile(checkpointer=self._checkpointer)
+                logger.info("StateGraph compiled with InMemorySaver checkpointer")
+                return graph
+                
         except Exception as e:
-            logger.warning(f"Failed to initialize store for long-term memory: {str(e)}")
-            return None
+            logger.error(f"Failed to initialize StateGraph: {str(e)}")
+            raise MemoryError(f"Failed to initialize StateGraph: {str(e)}") from e
     
-    def _init_in_memory_store(self) -> InMemoryStore:
-        """Initialize in-memory store for long-term memory.
-        
-        Returns:
-            InMemoryStore: The in-memory store
-        """
-        return InMemoryStore()
-    
-    def _init_postgres_store(self) -> PostgresStore:
-        """Initialize PostgreSQL store for long-term memory.
-        
-        Returns:
-            PostgresStore: The PostgreSQL store
-        """
-        connection_string = self._postgres_config.get("connection_string")
-        if not connection_string:
-            raise MemoryError("PostgreSQL connection string is required for postgres store type")
-        
-        return PostgresStore.from_conn_string(connection_string)
-    
-    async def _get_thread_config(self, session_id: str) -> Dict[str, Any]:
-        """Get thread configuration for a session.
+    def _get_thread_config(self, session_id: str) -> Dict[str, Any]:
+        """Get thread configuration for a session following LangGraph playbook patterns.
         
         Args:
             session_id: Session identifier
             
         Returns:
-            Thread configuration dictionary
+            Thread configuration dictionary with proper configurable structure
         """
         return {
             "configurable": {
-                "thread_id": session_id,
-                "checkpoint_ns": "",
-                "checkpoint_id": None
+                "thread_id": session_id
             }
         }
     
@@ -197,7 +194,7 @@ class LangGraphCheckpointMemory(BaseMemory):
                                        role: str, 
                                        content: str, 
                                        metadata: Optional[Dict[str, Any]] = None) -> bool:
-        """Add a message to the checkpoint for a session.
+        """Add a message to the checkpoint following playbook patterns.
         
         Args:
             session_id: Session identifier
@@ -208,73 +205,44 @@ class LangGraphCheckpointMemory(BaseMemory):
         Returns:
             True if successful, False otherwise
         """
+        await self._ensure_initialized()
+        
         try:
-            # Create message data
-            message_data = {
-                "role": role,
-                "content": content,
-                "timestamp": datetime.now().isoformat(),
-                "session_id": session_id,
-                "metadata": metadata or {}
-            }
+            # Create message following exact playbook format
+            message = {"role": role, "content": content}
             
-            # Add SOEID to message if available in metadata
-            if metadata and "soeid" in metadata:
-                message_data["soeid"] = metadata["soeid"]
+            # Get thread configuration following playbook patterns
+            config = self._get_thread_config(session_id)
             
-            # Get thread configuration
-            config = await self._get_thread_config(session_id)
-            
-            # For checkpointers, we need to create a simple state structure
-            # This is a simplified approach - in a real implementation you'd use a proper LangGraph graph
-            state = {
-                "messages": [message_data],
-                "session_id": session_id,
-                "last_updated": datetime.now().isoformat()
-            }
-            
-            # Get existing messages from PostgreSQL first (for persistence across restarts)
-            existing_messages = await self._get_messages_from_checkpoint(session_id)
-            logger.debug(f"Retrieved {len(existing_messages)} existing messages from PostgreSQL for session {session_id}")
-            
-            # Append new message to existing messages
-            all_messages = existing_messages + [message_data]
-            
-            # Update internal tracking for performance
-            session_key = f"session_{session_id}"
-            if not hasattr(self, '_session_messages'):
-                self._session_messages = {}
-            self._session_messages[session_key] = all_messages
-            
-            # Create a unique checkpoint ID for this update
-            checkpoint_id = str(uuid.uuid4())
-            
-            # Create checkpoint data with proper structure
-            checkpoint_data = {
-                "v": 1,
-                "id": checkpoint_id,
-                "ts": datetime.now().isoformat(),
-                "channel_values": {"messages": all_messages},
-                "channel_versions": {"messages": len(all_messages)},
-                "versions_seen": {}
-            }
-            
-            # Store the checkpoint using sync method with context manager
+            # Use StateGraph to process message following playbook patterns
             if self._store_type == "postgres":
-                with PostgresSaver.from_conn_string(self._postgres_connection_string) as checkpointer:
-                    checkpointer.put(config, checkpoint_data, {}, {})
-                    logger.debug(f"Successfully stored checkpoint in PostgreSQL for session {session_id}")
+                # Use async context manager pattern for AsyncPostgresSaver (following playbook)
+                async with AsyncPostgresSaver.from_conn_string(self._postgres_connection_string) as checkpointer:
+                    graph = self._graph.compile(checkpointer=checkpointer)
+                    
+                    async for chunk in graph.astream(
+                        {"messages": [message]},
+                        config,
+                        stream_mode="values"
+                    ):
+                        if "messages" in chunk and chunk["messages"]:
+                            last_message = chunk["messages"][-1]
+                            logger.debug(f"Processed message: {last_message}")
+                    
+                    logger.debug(f"Successfully stored message in AsyncPostgresSaver for session {session_id}")
             else:
-                self._checkpointer.put(config, checkpoint_data, {}, {})
-                logger.debug(f"Successfully stored checkpoint in in-memory storage for session {session_id}")
+                # For in-memory checkpointer, use the compiled graph directly
+                for chunk in self._graph.stream(
+                    {"messages": [message]},
+                    config,
+                    stream_mode="values"
+                ):
+                    if "messages" in chunk and chunk["messages"]:
+                        last_message = chunk["messages"][-1]
+                        logger.debug(f"Processed message: {last_message}")
+                
+                logger.debug(f"Successfully stored message in in-memory storage for session {session_id}")
             
-            # Update internal cache for performance (but don't rely on it for persistence)
-            if not hasattr(self, '_session_messages'):
-                self._session_messages = {}
-            session_key = f"session_{session_id}"
-            self._session_messages[session_key] = all_messages
-            
-            logger.info(f"Added message to checkpoint for session {session_id}, total messages: {len(all_messages)}")
             return True
             
         except Exception as e:
@@ -284,7 +252,7 @@ class LangGraphCheckpointMemory(BaseMemory):
     async def _get_messages_from_checkpoint(self, 
                                           session_id: str, 
                                           limit: Optional[int] = None) -> List[Dict[str, Any]]:
-        """Get messages from checkpoint for a session.
+        """Get messages from checkpoint following playbook patterns.
         
         Args:
             session_id: Session identifier
@@ -293,71 +261,91 @@ class LangGraphCheckpointMemory(BaseMemory):
         Returns:
             List of messages
         """
+        await self._ensure_initialized()
+        
         try:
-            # Always try to get from persistent storage first
-            config = await self._get_thread_config(session_id)
-            logger.debug(f"Getting messages for session {session_id} with config: {config}")
+            # Get thread configuration following playbook patterns
+            config = self._get_thread_config(session_id)
             
-            checkpoint = None
-            # Use context manager for PostgreSQL
+            messages = []
+            
+            # Use appropriate checkpointer following playbook patterns
             if self._store_type == "postgres":
-                with PostgresSaver.from_conn_string(self._postgres_connection_string) as checkpointer:
-                    checkpoint = checkpointer.get(config)
-                    logger.debug(f"Retrieved checkpoint from PostgreSQL: {checkpoint is not None}")
+                # Use async context manager pattern for AsyncPostgresSaver (following playbook)
+                async with AsyncPostgresSaver.from_conn_string(self._postgres_connection_string) as checkpointer:
+                    checkpoints = list(checkpointer.list(config))
+                    
+                    if checkpoints:
+                        latest_checkpoint = checkpoints[0]
+                        if hasattr(latest_checkpoint, 'checkpoint') and latest_checkpoint.checkpoint:
+                            channel_values = latest_checkpoint.checkpoint.get('channel_values', {})
+                            messages = channel_values.get('messages', [])
+                        
+                        logger.debug(f"Retrieved {len(messages)} messages from AsyncPostgresSaver for session {session_id}")
             else:
-                checkpoint = self._checkpointer.get(config)
-                logger.debug(f"Retrieved checkpoint from in-memory: {checkpoint is not None}")
-            
-            # If we got data from persistent storage, return it
-            if checkpoint:
-                # Handle both dict and object formats
-                channel_values = None
-                if isinstance(checkpoint, dict):
-                    channel_values = checkpoint.get('channel_values', {})
-                elif hasattr(checkpoint, 'channel_values'):
-                    channel_values = checkpoint.channel_values
+                # For in-memory checkpointer
+                checkpoints = list(self._checkpointer.list(config))
                 
-                if channel_values:
-                    messages = channel_values.get("messages", [])
-                    if isinstance(messages, list):
-                        logger.info(f"Retrieved {len(messages)} messages from persistent storage for session {session_id}")
-                        
-                        # Update cache for performance
-                        if not hasattr(self, '_session_messages'):
-                            self._session_messages = {}
-                        session_key = f"session_{session_id}"
-                        self._session_messages[session_key] = messages
-                        
-                        # Apply limit if specified
-                        if limit and len(messages) > limit:
-                            messages = messages[-limit:]
-                        
-                        return messages
+                if checkpoints:
+                    latest_checkpoint = checkpoints[0]
+                    if hasattr(latest_checkpoint, 'checkpoint') and latest_checkpoint.checkpoint:
+                        channel_values = latest_checkpoint.checkpoint.get('channel_values', {})
+                        messages = channel_values.get('messages', [])
+                    
+                    logger.debug(f"Retrieved {len(messages)} messages from in-memory storage for session {session_id}")
             
-            # No data found in persistent storage
-            logger.info(f"No messages found in persistent storage for session {session_id}")
-            return []
+            # Apply limit if specified
+            if limit and len(messages) > limit:
+                messages = messages[-limit:]
+            
+            return messages
             
         except Exception as e:
             logger.error(f"Failed to get messages from checkpoint: {str(e)}", exc_info=True)
             return []
     
     async def _list_thread_ids(self) -> List[str]:
-        """List all thread IDs from checkpointer.
+        """List all thread IDs from checkpointer following playbook patterns.
         
         Returns:
             List of thread IDs
         """
+        await self._ensure_initialized()
+        
         try:
-            # First try to get from our internal storage
-            if hasattr(self, '_simple_storage'):
-                thread_ids = list(self._simple_storage.keys())
-                logger.debug(f"Found {len(thread_ids)} threads in internal storage")
-                return thread_ids
+            thread_ids = []
             
-            # Fallback to checkpoint listing (using sync method since async not implemented)
-            logger.warning("Checkpoint listing not available with PostgreSQL checkpointer")
-            return []
+            if self._store_type == "postgres":
+                # Use async context manager pattern for AsyncPostgresSaver (following playbook)
+                async with AsyncPostgresSaver.from_conn_string(self._postgres_connection_string) as checkpointer:
+                    # List all checkpoints and extract thread IDs
+                    try:
+                        # Get all checkpoints without specific config to list all threads
+                        all_checkpoints = list(checkpointer.list({}))
+                        thread_ids = list(set(
+                            checkpoint.config.get("configurable", {}).get("thread_id")
+                            for checkpoint in all_checkpoints
+                            if checkpoint.config.get("configurable", {}).get("thread_id")
+                        ))
+                        logger.debug(f"Found {len(thread_ids)} threads in AsyncPostgresSaver checkpointer")
+                    except Exception as list_error:
+                        logger.warning(f"Failed to list checkpoints from AsyncPostgresSaver: {list_error}")
+                        thread_ids = []
+            else:
+                # For in-memory checkpointer
+                try:
+                    all_checkpoints = list(self._checkpointer.list({}))
+                    thread_ids = list(set(
+                        checkpoint.config.get("configurable", {}).get("thread_id")
+                        for checkpoint in all_checkpoints
+                        if checkpoint.config.get("configurable", {}).get("thread_id")
+                    ))
+                    logger.debug(f"Found {len(thread_ids)} threads in in-memory checkpointer")
+                except Exception as list_error:
+                    logger.warning(f"Failed to list checkpoints from in-memory storage: {list_error}")
+                    thread_ids = []
+            
+            return thread_ids
             
         except Exception as e:
             logger.error(f"Failed to list thread IDs: {str(e)}", exc_info=True)
@@ -545,6 +533,8 @@ class LangGraphCheckpointMemory(BaseMemory):
         Returns:
             True if successful, False otherwise
         """
+        await self._ensure_initialized()
+        
         # Handle Memory interface call: add(user_id, messages)
         if user_id and messages and not session_id and not query and not response:
             session_id = user_id  # Use user_id as session_id
@@ -684,6 +674,8 @@ class LangGraphCheckpointMemory(BaseMemory):
         Returns:
             List of sessions with messages for the user
         """
+        await self._ensure_initialized()
+        
         try:
             # Get all thread IDs
             thread_ids = await self._list_thread_ids()
@@ -742,12 +734,14 @@ class LangGraphCheckpointMemory(BaseMemory):
         Returns:
             True if successful, False otherwise
         """
+        await self._ensure_initialized()
+        
         try:
             async with self._lock:
                 # Delete thread from checkpointer
-                config = await self._get_thread_config(session_id)
+                config = self._get_thread_config(session_id)
                 if self._store_type == "postgres":
-                    with PostgresSaver.from_conn_string(self._postgres_connection_string) as checkpointer:
+                    async with AsyncPostgresSaver.from_conn_string(self._postgres_connection_string) as checkpointer:
                         checkpointer.delete_thread(config["configurable"]["thread_id"])
                 else:
                     self._checkpointer.delete_thread(config["configurable"]["thread_id"])
@@ -801,93 +795,6 @@ class LangGraphCheckpointMemory(BaseMemory):
             logger.error(f"Failed to clear user history for SOEID {soeid}: {str(e)}", exc_info=True)
             return False
     
-    async def add_long_term_memory(self, 
-                                 namespace: tuple, 
-                                 key: str, 
-                                 data: Dict[str, Any]) -> bool:
-        """Add long-term memory using LangGraph store.
-        
-        Args:
-            namespace: Memory namespace (e.g., (user_id, "preferences"))
-            key: Memory key
-            data: Memory data
-            
-        Returns:
-            True if successful, False otherwise
-        """
-        if not self._store:
-            logger.warning("Long-term memory store is not available")
-            return False
-        
-        try:
-            self._store.put(namespace, key, data)
-            logger.debug(f"Added long-term memory {key} to namespace {namespace}")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to add long-term memory: {str(e)}", exc_info=True)
-            return False
-    
-    async def get_long_term_memory(self, namespace: tuple, key: str) -> Optional[Dict[str, Any]]:
-        """Get long-term memory from LangGraph store.
-        
-        Args:
-            namespace: Memory namespace
-            key: Memory key
-            
-        Returns:
-            Memory data if found, None otherwise
-        """
-        if not self._store:
-            logger.warning("Long-term memory store is not available")
-            return None
-        
-        try:
-            items = self._store.get(namespace, key)
-            if items:
-                if isinstance(items, list) and len(items) > 0:
-                    item = items[0]
-                else:
-                    item = items
-                
-                if hasattr(item, 'value'):
-                    return item.value
-                elif hasattr(item, 'data'):
-                    return item.data
-                elif isinstance(item, dict):
-                    return item
-                else:
-                    return dict(item.__dict__) if hasattr(item, '__dict__') else None
-            return None
-        except Exception as e:
-            logger.error(f"Failed to get long-term memory: {str(e)}", exc_info=True)
-            return None
-    
-    async def search_long_term_memory(self, 
-                                    namespace: tuple, 
-                                    query: str = "", 
-                                    filter_dict: Optional[Dict[str, Any]] = None,
-                                    limit: Optional[int] = None) -> List[Dict[str, Any]]:
-        """Search long-term memory using LangGraph store.
-        
-        Args:
-            namespace: Memory namespace
-            query: Search query
-            filter_dict: Filter criteria
-            limit: Maximum number of results
-            
-        Returns:
-            List of matching memory items
-        """
-        if not self._store:
-            logger.warning("Long-term memory store is not available")
-            return []
-        
-        try:
-            items = self._store.search(namespace, query=query, filter=filter_dict, limit=limit)
-            return [item.value for item in items]
-        except Exception as e:
-            logger.error(f"Failed to search long-term memory: {str(e)}", exc_info=True)
-            return []
     
     async def get_chat_history_by_soeid_and_date(self, 
                                                soeid: str, 
@@ -903,6 +810,8 @@ class LangGraphCheckpointMemory(BaseMemory):
         Returns:
             List of chat messages from the specified date range
         """
+        await self._ensure_initialized()
+        
         try:
             # Calculate the cutoff date
             cutoff_date = datetime.now() - timedelta(days=days)
