@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 # Import LangGraph checkpoint components following playbook patterns
 try:
     from langgraph.checkpoint.memory import InMemorySaver
-    from langgraph.checkpoint.postgres import PostgresSaver
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
     from langgraph.graph import StateGraph, MessagesState, START
     LANGGRAPH_CHECKPOINT_AVAILABLE = True
     POSTGRES_CHECKPOINT_AVAILABLE = True
@@ -20,7 +20,7 @@ except ImportError as e:
     LANGGRAPH_CHECKPOINT_AVAILABLE = False
     POSTGRES_CHECKPOINT_AVAILABLE = False
     InMemorySaver = None
-    PostgresSaver = None
+    AsyncPostgresSaver = None
     StateGraph = None
     MessagesState = None
     START = None
@@ -33,10 +33,10 @@ class LangGraphCheckpointMemory(BaseMemory):
     """Enhanced LangGraph memory implementation following the official playbook patterns.
     
     This implementation follows LangGraph best practices from the playbook:
-    - Uses InMemorySaver for development and PostgresSaver for production
+    - Uses InMemorySaver for development and AsyncPostgresSaver for production
     - Implements proper StateGraph with MessagesState pattern
-    - Uses context manager pattern for PostgreSQL connections
-    - Calls checkpointer.setup() appropriately for database initialization
+    - Uses async context manager pattern for PostgreSQL connections
+    - Calls await checkpointer.setup() appropriately for database initialization
     - Supports memory toggle via configuration (enabled/disabled)
     - Follows thread-scoped memory with proper configurable thread_id
     """
@@ -66,8 +66,9 @@ class LangGraphCheckpointMemory(BaseMemory):
         self._store_type = self._config.get("store_type", "in_memory")
         self._postgres_config = self._config.get("postgres", {})
         
-        # Initialize checkpointer following playbook patterns
-        self._checkpointer = self._init_checkpointer()
+        # Initialize checkpointer following playbook patterns (will be done async)
+        self._checkpointer = None
+        self._initialized = False
         
         # Initialize the StateGraph following playbook patterns
         self._graph = self._init_graph()
@@ -76,13 +77,23 @@ class LangGraphCheckpointMemory(BaseMemory):
         self._sessions: Dict[str, Dict[str, Any]] = {}
         self._lock = asyncio.Lock()
         
-        logger.info(f"LangGraph checkpoint memory system initialized with {self._store_type} storage following playbook patterns")
+        logger.info(f"LangGraph checkpoint memory system created with {self._store_type} storage following playbook patterns")
     
-    def _init_checkpointer(self):
+    async def _ensure_initialized(self):
+        """Ensure the memory system is properly initialized with async patterns."""
+        if self._initialized:
+            return
+        
+        # Initialize checkpointer following async playbook patterns
+        self._checkpointer = await self._init_checkpointer()
+        self._initialized = True
+        logger.info("LangGraph checkpoint memory system async initialization completed")
+    
+    async def _init_checkpointer(self):
         """Initialize the appropriate LangGraph checkpointer following playbook patterns.
         
         Returns:
-            Checkpointer instance or connection string for PostgreSQL
+            Checkpointer instance or connection string for AsyncPostgresSaver
         """
         try:
             if self._store_type == "in_memory":
@@ -91,7 +102,7 @@ class LangGraphCheckpointMemory(BaseMemory):
                 return checkpointer
             elif self._store_type == "postgres":
                 if not POSTGRES_CHECKPOINT_AVAILABLE:
-                    logger.warning("PostgreSQL checkpointer is not available. Falling back to in-memory checkpointer.")
+                    logger.warning("AsyncPostgresSaver checkpointer is not available. Falling back to in-memory checkpointer.")
                     self._store_type = "in_memory"
                     return InMemorySaver()
                 
@@ -103,14 +114,14 @@ class LangGraphCheckpointMemory(BaseMemory):
                 self._postgres_connection_string = connection_string
                 
                 try:
-                    with PostgresSaver.from_conn_string(connection_string) as checkpointer:
-                        checkpointer.setup()
-                        logger.info("PostgreSQL database schema setup completed successfully")
+                    async with AsyncPostgresSaver.from_conn_string(connection_string) as checkpointer:
+                        await checkpointer.setup()
+                        logger.info("AsyncPostgresSaver database schema setup completed successfully")
                 except Exception as setup_error:
-                    logger.warning(f"PostgreSQL schema setup failed (tables may already exist): {setup_error}")
+                    logger.warning(f"AsyncPostgresSaver schema setup failed (tables may already exist): {setup_error}")
                 
-                logger.info("PostgreSQL checkpointer initialized with context manager pattern")
-                return connection_string  # Return connection string for context manager usage
+                logger.info("AsyncPostgresSaver checkpointer initialized with async context manager pattern")
+                return connection_string  # Return connection string for async context manager usage
             else:
                 raise MemoryError(f"Unsupported store type: {self._store_type}")
         except Exception as e:
@@ -151,7 +162,7 @@ class LangGraphCheckpointMemory(BaseMemory):
             # Compile with appropriate checkpointer following playbook patterns
             if self._store_type == "postgres":
                 # For PostgreSQL, return uncompiled builder for context manager usage
-                logger.info("StateGraph configured for PostgreSQL checkpointer with context manager pattern")
+                logger.info("StateGraph configured for AsyncPostgresSaver checkpointer with async context manager pattern")
                 return builder
             else:
                 # For in-memory, compile immediately with checkpointer
@@ -194,6 +205,8 @@ class LangGraphCheckpointMemory(BaseMemory):
         Returns:
             True if successful, False otherwise
         """
+        await self._ensure_initialized()
+        
         try:
             # Create message following exact playbook format
             message = {"role": role, "content": content}
@@ -203,11 +216,11 @@ class LangGraphCheckpointMemory(BaseMemory):
             
             # Use StateGraph to process message following playbook patterns
             if self._store_type == "postgres":
-                # Use context manager pattern for PostgreSQL (following playbook)
-                with PostgresSaver.from_conn_string(self._postgres_connection_string) as checkpointer:
+                # Use async context manager pattern for AsyncPostgresSaver (following playbook)
+                async with AsyncPostgresSaver.from_conn_string(self._postgres_connection_string) as checkpointer:
                     graph = self._graph.compile(checkpointer=checkpointer)
                     
-                    for chunk in graph.stream(
+                    async for chunk in graph.astream(
                         {"messages": [message]},
                         config,
                         stream_mode="values"
@@ -216,7 +229,7 @@ class LangGraphCheckpointMemory(BaseMemory):
                             last_message = chunk["messages"][-1]
                             logger.debug(f"Processed message: {last_message}")
                     
-                    logger.debug(f"Successfully stored message in PostgreSQL for session {session_id}")
+                    logger.debug(f"Successfully stored message in AsyncPostgresSaver for session {session_id}")
             else:
                 # For in-memory checkpointer, use the compiled graph directly
                 for chunk in self._graph.stream(
@@ -248,6 +261,8 @@ class LangGraphCheckpointMemory(BaseMemory):
         Returns:
             List of messages
         """
+        await self._ensure_initialized()
+        
         try:
             # Get thread configuration following playbook patterns
             config = self._get_thread_config(session_id)
@@ -256,8 +271,8 @@ class LangGraphCheckpointMemory(BaseMemory):
             
             # Use appropriate checkpointer following playbook patterns
             if self._store_type == "postgres":
-                # Use context manager pattern for PostgreSQL (following playbook)
-                with PostgresSaver.from_conn_string(self._postgres_connection_string) as checkpointer:
+                # Use async context manager pattern for AsyncPostgresSaver (following playbook)
+                async with AsyncPostgresSaver.from_conn_string(self._postgres_connection_string) as checkpointer:
                     checkpoints = list(checkpointer.list(config))
                     
                     if checkpoints:
@@ -266,7 +281,7 @@ class LangGraphCheckpointMemory(BaseMemory):
                             channel_values = latest_checkpoint.checkpoint.get('channel_values', {})
                             messages = channel_values.get('messages', [])
                         
-                        logger.debug(f"Retrieved {len(messages)} messages from PostgreSQL for session {session_id}")
+                        logger.debug(f"Retrieved {len(messages)} messages from AsyncPostgresSaver for session {session_id}")
             else:
                 # For in-memory checkpointer
                 checkpoints = list(self._checkpointer.list(config))
@@ -295,12 +310,14 @@ class LangGraphCheckpointMemory(BaseMemory):
         Returns:
             List of thread IDs
         """
+        await self._ensure_initialized()
+        
         try:
             thread_ids = []
             
             if self._store_type == "postgres":
-                # Use context manager pattern for PostgreSQL (following playbook)
-                with PostgresSaver.from_conn_string(self._postgres_connection_string) as checkpointer:
+                # Use async context manager pattern for AsyncPostgresSaver (following playbook)
+                async with AsyncPostgresSaver.from_conn_string(self._postgres_connection_string) as checkpointer:
                     # List all checkpoints and extract thread IDs
                     try:
                         # Get all checkpoints without specific config to list all threads
@@ -310,9 +327,9 @@ class LangGraphCheckpointMemory(BaseMemory):
                             for checkpoint in all_checkpoints
                             if checkpoint.config.get("configurable", {}).get("thread_id")
                         ))
-                        logger.debug(f"Found {len(thread_ids)} threads in PostgreSQL checkpointer")
+                        logger.debug(f"Found {len(thread_ids)} threads in AsyncPostgresSaver checkpointer")
                     except Exception as list_error:
-                        logger.warning(f"Failed to list checkpoints from PostgreSQL: {list_error}")
+                        logger.warning(f"Failed to list checkpoints from AsyncPostgresSaver: {list_error}")
                         thread_ids = []
             else:
                 # For in-memory checkpointer
@@ -516,6 +533,8 @@ class LangGraphCheckpointMemory(BaseMemory):
         Returns:
             True if successful, False otherwise
         """
+        await self._ensure_initialized()
+        
         # Handle Memory interface call: add(user_id, messages)
         if user_id and messages and not session_id and not query and not response:
             session_id = user_id  # Use user_id as session_id
@@ -655,6 +674,8 @@ class LangGraphCheckpointMemory(BaseMemory):
         Returns:
             List of sessions with messages for the user
         """
+        await self._ensure_initialized()
+        
         try:
             # Get all thread IDs
             thread_ids = await self._list_thread_ids()
@@ -713,12 +734,14 @@ class LangGraphCheckpointMemory(BaseMemory):
         Returns:
             True if successful, False otherwise
         """
+        await self._ensure_initialized()
+        
         try:
             async with self._lock:
                 # Delete thread from checkpointer
                 config = self._get_thread_config(session_id)
                 if self._store_type == "postgres":
-                    with PostgresSaver.from_conn_string(self._postgres_connection_string) as checkpointer:
+                    async with AsyncPostgresSaver.from_conn_string(self._postgres_connection_string) as checkpointer:
                         checkpointer.delete_thread(config["configurable"]["thread_id"])
                 else:
                     self._checkpointer.delete_thread(config["configurable"]["thread_id"])
@@ -787,6 +810,8 @@ class LangGraphCheckpointMemory(BaseMemory):
         Returns:
             List of chat messages from the specified date range
         """
+        await self._ensure_initialized()
+        
         try:
             # Calculate the cutoff date
             cutoff_date = datetime.now() - timedelta(days=days)
