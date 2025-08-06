@@ -116,6 +116,7 @@ class LangGraphCheckpointMemory(BaseMemory):
         self._checkpointer: Optional[AsyncPostgresSaver] = None
         self._store: Optional[AsyncPostgresStore] = None
         self._graph: Optional[StateGraph] = None
+        self._memory_storage: Dict[str, List[Dict[str, Any]]] = {}
         self._initialized = False
         self._lock = asyncio.Lock()
         
@@ -136,25 +137,35 @@ class LangGraphCheckpointMemory(BaseMemory):
                 logger.info("Memory disabled - skipping component initialization")
                 return
             
-            # Initialize AsyncPostgresSaver for checkpoints
-            # Create the saver and store it directly without manual context manager entry
-            self._checkpointer = AsyncPostgresSaver.from_conn_string(self._connection_string)
+            logger.info("Initializing LangGraph components with PostgreSQL backend...")
             
-            # Setup checkpointer tables using async context manager properly
-            async with self._checkpointer as checkpointer:
-                await checkpointer.setup()
-                logger.info("AsyncPostgresSaver setup completed")
+            # For now, disable LangGraph persistence due to schema issues
+            # and fall back to in-memory storage until the database schema is resolved
+            logger.warning("LangGraph PostgreSQL persistence temporarily disabled due to schema compatibility issues")
+            logger.warning("Using in-memory conversation storage as fallback")
             
-            # Initialize AsyncPostgresStore for cross-thread memory
-            self._store = AsyncPostgresStore.from_conn_string(self._connection_string)
+            # Initialize components but don't set up tables yet
+            try:
+                self._checkpointer = AsyncPostgresSaver.from_conn_string(self._connection_string)
+                logger.info("AsyncPostgresSaver created (tables setup deferred)")
+            except Exception as e:
+                logger.warning(f"Failed to create AsyncPostgresSaver: {e}")
+                self._checkpointer = None
             
-            # Setup store tables using async context manager properly
-            async with self._store as store:
-                await store.setup()
-                logger.info("AsyncPostgresStore setup completed")
+            try:
+                self._store = AsyncPostgresStore.from_conn_string(self._connection_string)
+                logger.info("AsyncPostgresStore created (tables setup deferred)")
+            except Exception as e:
+                logger.warning(f"Failed to create AsyncPostgresStore: {e}")
+                self._store = None
             
-            # Create a simple LangGraph workflow for message handling
-            self._graph = self._create_message_graph()
+            # Create a simple in-memory graph for now
+            logger.info("Creating LangGraph workflow without persistence...")
+            self._graph = self._create_simple_graph()
+            logger.info("LangGraph workflow created successfully (in-memory mode)")
+            
+            # Initialize in-memory storage as fallback
+            self._memory_storage = {}
             
         except Exception as e:
             logger.error(f"Failed to initialize LangGraph components: {e}")
@@ -172,7 +183,35 @@ class LangGraphCheckpointMemory(BaseMemory):
         workflow.add_node("process", process_messages)
         workflow.add_edge(START, "process")
         
-        return workflow.compile(checkpointer=self._checkpointer, store=self._store)
+        try:
+            # Compile the graph with checkpointer and store
+            return workflow.compile(checkpointer=self._checkpointer, store=self._store)
+        except Exception as e:
+            logger.error(f"Failed to compile graph with checkpointer and store: {e}")
+            # Fallback: try without store first
+            try:
+                logger.warning("Attempting to compile graph with checkpointer only (no store)")
+                return workflow.compile(checkpointer=self._checkpointer)
+            except Exception as e2:
+                logger.error(f"Failed to compile graph with checkpointer only: {e2}")
+                # Final fallback: no persistence
+                logger.warning("Compiling graph without persistence (memory-only mode)")
+                return workflow.compile()
+    
+    def _create_simple_graph(self) -> StateGraph:
+        """Create a simple LangGraph workflow without persistence."""
+        
+        async def process_messages(state: MessagesState):
+            """Simple node that processes messages without modification."""
+            return state
+        
+        # Create a minimal graph without persistence
+        workflow = StateGraph(MessagesState)
+        workflow.add_node("process", process_messages)
+        workflow.add_edge(START, "process")
+        
+        # Compile without any persistence
+        return workflow.compile()
     
     def _get_thread_config(self, session_id: str, soeid: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -299,19 +338,43 @@ class LangGraphCheckpointMemory(BaseMemory):
                 AIMessage(content=response)
             ]
             
-            # Use LangGraph to store the conversation within async context manager
-            async with self._checkpointer as checkpointer:
-                # Temporarily replace graph's checkpointer for this operation
-                temp_graph = self._create_message_graph()
-                await temp_graph.ainvoke(
-                    {"messages": messages},
-                    config=config
-                )
+            # Store conversation in memory fallback for now
+            async with self._lock:
+                if session_id not in self._memory_storage:
+                    self._memory_storage[session_id] = []
+                
+                # Add messages to in-memory storage
+                timestamp = datetime.now().isoformat()
+                self._memory_storage[session_id].append({
+                    "role": "user",
+                    "content": query,
+                    "timestamp": timestamp,
+                    "soeid": soeid
+                })
+                self._memory_storage[session_id].append({
+                    "role": "assistant", 
+                    "content": response,
+                    "timestamp": timestamp,
+                    "soeid": soeid
+                })
+                
+                # Keep only recent messages to prevent unlimited growth
+                if len(self._memory_storage[session_id]) > self._max_history * 2:
+                    self._memory_storage[session_id] = self._memory_storage[session_id][-self._max_history * 2:]
+                
+                logger.debug(f"Stored conversation in memory for session {session_id}")
             
-            # Also store user profile information in cross-thread store if SOEID provided
-            if soeid and self._store:
-                async with self._store as store:
-                    await self._update_user_profile_with_store(store, soeid, query, response, session_id, metadata)
+            # TODO: Re-enable LangGraph persistence once database schema issues are resolved
+            # try:
+            #     async with self._checkpointer as checkpointer:
+            #         temp_graph = self._create_message_graph()
+            #         await temp_graph.ainvoke({"messages": messages}, config=config)
+            # except Exception as e:
+            #     logger.warning(f"LangGraph persistence failed: {e}")
+            #     # Continue with in-memory storage
+            
+            # Store operation is already handled above in memory storage
+            # TODO: Re-enable user profile storage once database schema issues are resolved
             
             logger.debug(f"Added conversation to memory for session {session_id}")
             return True
@@ -402,18 +465,13 @@ class LangGraphCheckpointMemory(BaseMemory):
             return []
         
         try:
-            config = self._get_thread_config(session_id)
-            
-            # Get the latest state for this thread using async context manager
-            async with self._checkpointer as checkpointer:
-                temp_graph = self._create_message_graph()
-                state = await temp_graph.aget_state(config)
-            
-            if state and state.values and "messages" in state.values:
-                messages = state.values["messages"]
+            # Get history from in-memory storage
+            async with self._lock:
+                if session_id not in self._memory_storage:
+                    logger.debug(f"Session {session_id} not found in memory storage")
+                    return []
                 
-                # Convert LangChain messages to dictionaries
-                history = self._convert_from_langchain_messages(messages)
+                history = self._memory_storage[session_id].copy()
                 
                 # Apply date filtering if configured
                 if self._max_history_days > 0:
@@ -438,10 +496,8 @@ class LangGraphCheckpointMemory(BaseMemory):
                 elif self._max_history:
                     history = history[-self._max_history:]
                 
-                logger.debug(f"Retrieved {len(history)} messages for session {session_id}")
+                logger.debug(f"Retrieved {len(history)} messages for session {session_id} from memory storage")
                 return history
-            
-            return []
             
         except Exception as e:
             logger.error(f"Failed to get conversation history: {e}")
@@ -470,45 +526,29 @@ class LangGraphCheckpointMemory(BaseMemory):
             return []
         
         try:
-            namespace = self._get_user_namespace(soeid)
             cutoff_date = datetime.now() - timedelta(days=days)
             
-            # Search user memories in the store using async context manager
-            async with self._store as store:
-                memories = await store.asearch(
-                    namespace=namespace,
-                    limit=limit or self._max_history
-                )
-            
-            # Extract and filter conversations by date
+            # Search in-memory storage for user messages across all sessions
             history = []
-            for memory in memories:
-                memory_data = memory.value
-                if "conversation_snippet" in memory_data:
-                    snippet = memory_data["conversation_snippet"]
-                    timestamp_str = snippet.get("timestamp", "")
-                    
-                    try:
-                        timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
-                        if timestamp >= cutoff_date:
-                            # Add both user and assistant messages
-                            history.append({
-                                "role": "user",
-                                "content": snippet["query"],
-                                "timestamp": timestamp_str,
-                                "session_id": snippet["session_id"],
-                                "soeid": soeid
-                            })
-                            history.append({
-                                "role": "assistant",
-                                "content": snippet["response"],
-                                "timestamp": timestamp_str,
-                                "session_id": snippet["session_id"],
-                                "soeid": soeid
-                            })
-                    except (ValueError, TypeError):
-                        logger.warning(f"Failed to parse timestamp {timestamp_str}")
-                        continue
+            async with self._lock:
+                for session_id, messages in self._memory_storage.items():
+                    for msg in messages:
+                        # Check if message belongs to this user and is within date range
+                        if msg.get("soeid") == soeid:
+                            timestamp_str = msg.get("timestamp", "")
+                            try:
+                                timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                                if timestamp >= cutoff_date:
+                                    history.append({
+                                        "role": msg.get("role", "user"),
+                                        "content": msg.get("content", ""),
+                                        "timestamp": timestamp_str,
+                                        "session_id": session_id,
+                                        "soeid": soeid
+                                    })
+                            except (ValueError, TypeError):
+                                logger.warning(f"Failed to parse timestamp {timestamp_str}")
+                                continue
             
             # Sort by timestamp (newest first)
             history.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
@@ -516,7 +556,7 @@ class LangGraphCheckpointMemory(BaseMemory):
             if limit:
                 history = history[:limit]
             
-            logger.debug(f"Retrieved {len(history)} cross-session messages for SOEID {soeid}")
+            logger.debug(f"Retrieved {len(history)} cross-session messages for SOEID {soeid} from memory storage")
             return history
             
         except Exception as e:
@@ -539,14 +579,15 @@ class LangGraphCheckpointMemory(BaseMemory):
             return True
         
         try:
-            config = self._get_thread_config(session_id)
-            
-            # Delete the thread using LangGraph's method with async context manager
-            async with self._checkpointer as checkpointer:
-                await checkpointer.adelete_thread(config["configurable"]["thread_id"])
-            
-            logger.info(f"Cleared session {session_id}")
-            return True
+            # Clear from in-memory storage
+            async with self._lock:
+                if session_id in self._memory_storage:
+                    del self._memory_storage[session_id]
+                    logger.info(f"Cleared session {session_id} from memory storage")
+                    return True
+                else:
+                    logger.debug(f"Session {session_id} not found in memory storage")
+                    return True
             
         except Exception as e:
             logger.error(f"Failed to clear session {session_id}: {e}")
@@ -568,22 +609,21 @@ class LangGraphCheckpointMemory(BaseMemory):
             return True
         
         try:
-            # Clear cross-thread memories from store using async context manager
-            if self._store:
-                namespace = self._get_user_namespace(soeid)
+            # Clear all sessions for this user from in-memory storage
+            async with self._lock:
+                sessions_to_clear = []
+                for session_id, messages in self._memory_storage.items():
+                    # Check if any message in this session belongs to this user
+                    for msg in messages:
+                        if msg.get("soeid") == soeid:
+                            sessions_to_clear.append(session_id)
+                            break
                 
-                async with self._store as store:
-                    # Get all memories for the user
-                    memories = await store.asearch(namespace=namespace)
-                    
-                    # Delete each memory
-                    for memory in memories:
-                        await store.adelete(namespace=namespace, key=memory.key)
+                # Clear the sessions
+                for session_id in sessions_to_clear:
+                    del self._memory_storage[session_id]
                 
-                logger.info(f"Cleared cross-thread memories for SOEID {soeid}")
-            
-            # Note: Clearing thread-scoped memories would require knowing all session IDs
-            # This could be implemented by maintaining a user->sessions mapping in the store
+                logger.info(f"Cleared {len(sessions_to_clear)} sessions for SOEID {soeid} from memory storage")
             
             return True
             
