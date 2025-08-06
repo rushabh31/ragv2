@@ -233,14 +233,18 @@ class LangGraphCheckpointMemory(BaseMemory):
         return converted
     
     async def add(self, 
-                  session_id: str, 
-                  query: str, 
-                  response: str, 
+                  user_id: str = None,
+                  messages: List[Dict[str, str]] = None,
+                  session_id: str = None, 
+                  query: str = None, 
+                  response: str = None, 
                   metadata: Optional[Dict[str, Any]] = None) -> bool:
         """
         Add a conversation exchange to memory.
         
         Args:
+            user_id: User identifier (legacy parameter for Memory interface)
+            messages: List of message dictionaries (legacy parameter for Memory interface)
             session_id: Session identifier
             query: User query
             response: Assistant response
@@ -255,6 +259,30 @@ class LangGraphCheckpointMemory(BaseMemory):
             logger.debug("Memory or chat history disabled")
             return True
         
+        try:
+            # Handle both old and new parameter styles
+            if session_id is not None and query is not None and response is not None:
+                # New style parameters (BaseMemory interface)
+                return await self._add_session_interaction(session_id, query, response, metadata)
+            
+            elif user_id is not None and messages is not None:
+                # Old style parameters (Memory interface)
+                return await self._add_user_messages(user_id, messages, metadata)
+            
+            else:
+                logger.warning("Invalid parameters provided to LangGraphCheckpointMemory.add()")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Failed to add conversation to memory: {e}")
+            return False
+    
+    async def _add_session_interaction(self, 
+                                     session_id: str, 
+                                     query: str, 
+                                     response: str, 
+                                     metadata: Optional[Dict[str, Any]] = None) -> bool:
+        """Add a single interaction to memory (BaseMemory style)."""
         try:
             # Extract SOEID from metadata
             soeid = metadata.get("soeid") if metadata else None
@@ -282,7 +310,36 @@ class LangGraphCheckpointMemory(BaseMemory):
             return True
             
         except Exception as e:
-            logger.error(f"Failed to add conversation to memory: {e}")
+            logger.error(f"Failed to add session interaction: {e}")
+            return False
+    
+    async def _add_user_messages(self, 
+                               user_id: str, 
+                               messages: List[Dict[str, str]], 
+                               metadata: Optional[Dict[str, Any]] = None) -> bool:
+        """Add messages to memory (Memory interface style)."""
+        try:
+            # Convert messages to query/response pairs
+            for i in range(0, len(messages) - 1, 2):
+                if i + 1 < len(messages):
+                    user_msg = messages[i]
+                    assistant_msg = messages[i + 1]
+                    
+                    # Use user_id as session_id and add the interaction
+                    success = await self._add_session_interaction(
+                        session_id=user_id,
+                        query=user_msg.get("content", ""),
+                        response=assistant_msg.get("content", ""),
+                        metadata=metadata or {"user_id": user_id}
+                    )
+                    
+                    if not success:
+                        logger.warning(f"Failed to add message pair {i//2 + 1}")
+                        
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to add user messages: {e}")
             return False
     
     async def _update_user_profile(self, 
@@ -573,6 +630,59 @@ class LangGraphCheckpointMemory(BaseMemory):
             
         except Exception as e:
             logger.error(f"Error during cleanup: {e}")
+    
+    # Abstract methods implementation for BaseMemory
+    async def _add_interaction(self, 
+                             session_id: str,
+                             query: str, 
+                             response: str, 
+                             metadata: Optional[Dict[str, Any]] = None) -> bool:
+        """Add interaction using the internal method."""
+        return await self._add_session_interaction(session_id, query, response, metadata)
+    
+    async def _get_conversation_history(self, 
+                                      session_id: str, 
+                                      limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Get conversation history using the public get_history method."""
+        return await self.get_history(session_id, limit)
+    
+    async def _get_relevant_history(self, 
+                                  session_id: str, 
+                                  query: str, 
+                                  limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Get relevant history - for now, return recent history."""
+        # For LangGraph implementation, we'll use recent history as relevant history
+        # In the future, this could be enhanced with semantic similarity search
+        return await self.get_history(session_id, limit)
+    
+    
+    async def get(self, user_id: str, limit: int = 10) -> List[Dict[str, str]]:
+        """Get recent conversation history for a user (Memory interface).
+        
+        Args:
+            user_id: User identifier (treated as session_id)
+            limit: Maximum number of messages to retrieve
+            
+        Returns:
+            List of message dictionaries with 'role' and 'content' keys
+        """
+        try:
+            # Use user_id as session_id for this interface
+            history = await self.get_history(user_id, limit)
+            
+            # Convert to the format expected by Memory interface
+            messages = []
+            for msg in history:
+                messages.append({
+                    "role": msg.get("role", "user"),
+                    "content": msg.get("content", "")
+                })
+            
+            return messages
+            
+        except Exception as e:
+            logger.error(f"Failed to get conversation history for Memory interface: {e}")
+            return []
 
 
 # Remove the alias - LangGraphCheckpointMemory is the main class
