@@ -116,8 +116,6 @@ class LangGraphCheckpointMemory(BaseMemory):
         self._checkpointer: Optional[AsyncPostgresSaver] = None
         self._store: Optional[AsyncPostgresStore] = None
         self._graph: Optional[StateGraph] = None
-        self._checkpointer_manager = None
-        self._store_manager = None
         self._initialized = False
         self._lock = asyncio.Lock()
         
@@ -138,25 +136,22 @@ class LangGraphCheckpointMemory(BaseMemory):
                 logger.info("Memory disabled - skipping component initialization")
                 return
             
-            # Initialize AsyncPostgresSaver for checkpoints using async context manager
-            checkpointer_manager = AsyncPostgresSaver.from_conn_string(self._connection_string)
-            self._checkpointer = await checkpointer_manager.__aenter__()
+            # Initialize AsyncPostgresSaver for checkpoints
+            # Create the saver and store it directly without manual context manager entry
+            self._checkpointer = AsyncPostgresSaver.from_conn_string(self._connection_string)
             
-            # Setup checkpointer tables
-            await self._checkpointer.setup()
-            logger.info("AsyncPostgresSaver initialized and setup completed")
+            # Setup checkpointer tables using async context manager properly
+            async with self._checkpointer as checkpointer:
+                await checkpointer.setup()
+                logger.info("AsyncPostgresSaver setup completed")
             
-            # Initialize AsyncPostgresStore for cross-thread memory using async context manager
-            store_manager = AsyncPostgresStore.from_conn_string(self._connection_string)
-            self._store = await store_manager.__aenter__()
+            # Initialize AsyncPostgresStore for cross-thread memory
+            self._store = AsyncPostgresStore.from_conn_string(self._connection_string)
             
-            # Setup store tables
-            await self._store.setup()
-            logger.info("AsyncPostgresStore initialized and setup completed")
-            
-            # Store the context managers for proper cleanup
-            self._checkpointer_manager = checkpointer_manager
-            self._store_manager = store_manager
+            # Setup store tables using async context manager properly
+            async with self._store as store:
+                await store.setup()
+                logger.info("AsyncPostgresStore setup completed")
             
             # Create a simple LangGraph workflow for message handling
             self._graph = self._create_message_graph()
@@ -304,15 +299,19 @@ class LangGraphCheckpointMemory(BaseMemory):
                 AIMessage(content=response)
             ]
             
-            # Use LangGraph to store the conversation
-            await self._graph.ainvoke(
-                {"messages": messages},
-                config=config
-            )
+            # Use LangGraph to store the conversation within async context manager
+            async with self._checkpointer as checkpointer:
+                # Temporarily replace graph's checkpointer for this operation
+                temp_graph = self._create_message_graph()
+                await temp_graph.ainvoke(
+                    {"messages": messages},
+                    config=config
+                )
             
             # Also store user profile information in cross-thread store if SOEID provided
             if soeid and self._store:
-                await self._update_user_profile(soeid, query, response, session_id, metadata)
+                async with self._store as store:
+                    await self._update_user_profile_with_store(store, soeid, query, response, session_id, metadata)
             
             logger.debug(f"Added conversation to memory for session {session_id}")
             return True
@@ -350,13 +349,14 @@ class LangGraphCheckpointMemory(BaseMemory):
             logger.error(f"Failed to add user messages: {e}")
             return False
     
-    async def _update_user_profile(self, 
-                                   soeid: str, 
-                                   query: str, 
-                                   response: str, 
-                                   session_id: str,
-                                   metadata: Optional[Dict[str, Any]] = None):
-        """Update user profile with conversation insights."""
+    async def _update_user_profile_with_store(self, 
+                                           store: AsyncPostgresStore,
+                                           soeid: str, 
+                                           query: str, 
+                                           response: str, 
+                                           session_id: str,
+                                           metadata: Optional[Dict[str, Any]] = None):
+        """Update user profile with conversation insights using provided store."""
         try:
             namespace = self._get_user_namespace(soeid)
             
@@ -374,7 +374,7 @@ class LangGraphCheckpointMemory(BaseMemory):
             }
             
             # Store in cross-thread memory
-            await self._store.aput(
+            await store.aput(
                 namespace=namespace,
                 key=memory_id,
                 value=memory_data
@@ -404,8 +404,10 @@ class LangGraphCheckpointMemory(BaseMemory):
         try:
             config = self._get_thread_config(session_id)
             
-            # Get the latest state for this thread
-            state = await self._graph.aget_state(config)
+            # Get the latest state for this thread using async context manager
+            async with self._checkpointer as checkpointer:
+                temp_graph = self._create_message_graph()
+                state = await temp_graph.aget_state(config)
             
             if state and state.values and "messages" in state.values:
                 messages = state.values["messages"]
@@ -471,11 +473,12 @@ class LangGraphCheckpointMemory(BaseMemory):
             namespace = self._get_user_namespace(soeid)
             cutoff_date = datetime.now() - timedelta(days=days)
             
-            # Search user memories in the store
-            memories = await self._store.asearch(
-                namespace=namespace,
-                limit=limit or self._max_history
-            )
+            # Search user memories in the store using async context manager
+            async with self._store as store:
+                memories = await store.asearch(
+                    namespace=namespace,
+                    limit=limit or self._max_history
+                )
             
             # Extract and filter conversations by date
             history = []
@@ -538,8 +541,9 @@ class LangGraphCheckpointMemory(BaseMemory):
         try:
             config = self._get_thread_config(session_id)
             
-            # Delete the thread using LangGraph's method
-            await self._checkpointer.adelete_thread(config["configurable"]["thread_id"])
+            # Delete the thread using LangGraph's method with async context manager
+            async with self._checkpointer as checkpointer:
+                await checkpointer.adelete_thread(config["configurable"]["thread_id"])
             
             logger.info(f"Cleared session {session_id}")
             return True
@@ -564,16 +568,17 @@ class LangGraphCheckpointMemory(BaseMemory):
             return True
         
         try:
-            # Clear cross-thread memories from store
+            # Clear cross-thread memories from store using async context manager
             if self._store:
                 namespace = self._get_user_namespace(soeid)
                 
-                # Get all memories for the user
-                memories = await self._store.asearch(namespace=namespace)
-                
-                # Delete each memory
-                for memory in memories:
-                    await self._store.adelete(namespace=namespace, key=memory.key)
+                async with self._store as store:
+                    # Get all memories for the user
+                    memories = await store.asearch(namespace=namespace)
+                    
+                    # Delete each memory
+                    for memory in memories:
+                        await store.adelete(namespace=namespace, key=memory.key)
                 
                 logger.info(f"Cleared cross-thread memories for SOEID {soeid}")
             
@@ -624,25 +629,24 @@ class LangGraphCheckpointMemory(BaseMemory):
     async def cleanup(self):
         """Clean up resources."""
         try:
-            # Properly close the async context managers
-            if self._checkpointer_manager:
+            # Clean up components
+            if self._checkpointer:
                 try:
-                    await self._checkpointer_manager.__aexit__(None, None, None)
-                    self._checkpointer_manager = None
+                    # The checkpointer will handle its own cleanup when the object is destroyed
                     self._checkpointer = None
-                    logger.debug("AsyncPostgresSaver context manager closed")
+                    logger.debug("AsyncPostgresSaver cleared")
                 except Exception as e:
-                    logger.warning(f"Error closing checkpointer context manager: {e}")
+                    logger.warning(f"Error clearing checkpointer: {e}")
             
-            if self._store_manager:
+            if self._store:
                 try:
-                    await self._store_manager.__aexit__(None, None, None)
-                    self._store_manager = None
+                    # The store will handle its own cleanup when the object is destroyed
                     self._store = None
-                    logger.debug("AsyncPostgresStore context manager closed")
+                    logger.debug("AsyncPostgresStore cleared")
                 except Exception as e:
-                    logger.warning(f"Error closing store context manager: {e}")
+                    logger.warning(f"Error clearing store: {e}")
             
+            self._graph = None
             self._initialized = False
             logger.info("LangGraph memory cleanup completed")
             
