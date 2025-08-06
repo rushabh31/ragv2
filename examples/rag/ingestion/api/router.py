@@ -1,5 +1,8 @@
 import logging
-from typing import Optional, Dict, Any
+import os
+import shutil
+import uuid
+from typing import Optional, Dict, Any, List
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Header, BackgroundTasks, Query, status, Form
 from fastapi.responses import JSONResponse
 import json
@@ -12,7 +15,11 @@ from examples.rag.ingestion.api.models import (
     ConfigUpdateRequest,
     ConfigUpdateResponse,
     SessionInfoResponse,
-    SessionListResponse
+    SessionListResponse,
+    BulkUploadRequest,
+    BulkUploadResponse,
+    BatchStatusResponse,
+    FileUploadResult
 )
 from examples.rag.ingestion.api.service import IngestionService
 from src.rag.core.exceptions.exceptions import DocumentProcessingError
@@ -474,4 +481,167 @@ async def update_configuration(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Configuration update failed: {str(e)}"
+        )
+
+
+@router.post("/bulk-upload", response_model=BulkUploadResponse)
+async def bulk_upload_documents(
+    background_tasks: BackgroundTasks,
+    files: List[UploadFile] = File(...),
+    global_metadata: Optional[str] = Form(None, description="JSON string of metadata to apply to all files"),
+    process_in_parallel: bool = Form(True, description="Whether to process files in parallel"),
+    max_parallel_jobs: int = Form(3, ge=1, le=10, description="Maximum number of parallel processing jobs"),
+    soeid: str = Header(...),
+    service: IngestionService = Depends(get_ingestion_service)
+):
+    """Upload multiple documents for processing.
+    
+    Args:
+        background_tasks: FastAPI background tasks
+        files: List of uploaded files
+        global_metadata: JSON string of metadata to apply to all files
+        process_in_parallel: Whether to process files in parallel
+        max_parallel_jobs: Maximum number of parallel jobs
+        soeid: User identifier (header)
+        service: Ingestion service instance
+    
+    Returns:
+        Bulk upload response with batch information
+    """
+    try:
+        if not files:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No files provided"
+            )
+        
+        if len(files) > 50:  # Reasonable limit for bulk upload
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Too many files. Maximum 50 files per batch."
+            )
+        
+        # Parse global metadata if provided
+        metadata = {}
+        if global_metadata:
+            try:
+                metadata = json.loads(global_metadata)
+                if not isinstance(metadata, dict):
+                    metadata = {"description": global_metadata}
+            except json.JSONDecodeError:
+                logger.warning(f"Failed to parse global metadata JSON: {global_metadata}")
+                metadata = {"description": global_metadata}
+        
+        # Save all uploaded files to disk
+        uploads_dir = os.path.join("data", "uploads")
+        os.makedirs(uploads_dir, exist_ok=True)
+        
+        saved_files = []
+        file_results = []
+        
+        for file in files:
+            try:
+                # Preserve original filename information
+                original_filename = file.filename or "unknown_file"
+                _, ext = os.path.splitext(original_filename)
+                document_id = str(uuid.uuid4())
+                
+                # Save with UUID but preserve original filename in metadata
+                file_path = os.path.join(uploads_dir, f"{document_id}{ext}")
+                with open(file_path, "wb") as f:
+                    shutil.copyfileobj(file.file, f)
+                
+                saved_files.append(file_path)
+                logger.info(f"Saved file: {original_filename} -> {file_path}")
+                
+            except Exception as e:
+                logger.error(f"Failed to save file {file.filename}: {str(e)}")
+                file_results.append(FileUploadResult(
+                    filename=file.filename or "unknown_file",
+                    status="failed",
+                    message="Failed to save file",
+                    error=str(e)
+                ))
+        
+        # Process saved files in bulk
+        if saved_files:
+            result = await service.bulk_upload_documents(
+                files=saved_files,
+                user_id=soeid,
+                global_metadata=metadata,
+                process_in_parallel=process_in_parallel,
+                max_parallel_jobs=max_parallel_jobs
+            )
+            
+            return BulkUploadResponse(
+                batch_id=result["batch_id"],
+                total_files=result["total_files"],
+                successful_uploads=result["successful_uploads"],
+                failed_uploads=result["failed_uploads"],
+                results=[FileUploadResult(**r) for r in result["results"]] + file_results,
+                message=result["message"]
+            )
+        else:
+            # All files failed to save
+            return BulkUploadResponse(
+                total_files=len(files),
+                successful_uploads=0,
+                failed_uploads=len(files),
+                results=file_results,
+                message="All files failed to save"
+            )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Bulk upload failed: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Bulk upload failed: {str(e)}"
+        )
+
+
+@router.get("/batch-status/{batch_id}", response_model=BatchStatusResponse)
+async def get_batch_status(
+    batch_id: str,
+    service: IngestionService = Depends(get_ingestion_service)
+):
+    """Get the status of a bulk processing batch.
+    
+    Args:
+        batch_id: Batch identifier
+        service: Ingestion service instance
+    
+    Returns:
+        Batch status information
+    """
+    try:
+        batch_status = await service.get_batch_status(batch_id)
+        
+        if not batch_status:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Batch {batch_id} not found"
+            )
+        
+        return BatchStatusResponse(
+            batch_id=batch_status["batch_id"],
+            total_files=batch_status["total_files"],
+            completed_jobs=batch_status["completed_jobs"],
+            failed_jobs=batch_status["failed_jobs"],
+            in_progress_jobs=batch_status["in_progress_jobs"],
+            pending_jobs=batch_status["pending_jobs"],
+            overall_status=batch_status["overall_status"],
+            results=[FileUploadResult(**r) for r in batch_status["results"]],
+            created_at=batch_status["created_at"],
+            updated_at=batch_status["updated_at"]
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get batch status: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve batch status: {str(e)}"
         )

@@ -626,3 +626,178 @@ class IngestionService:
         except Exception as e:
             logger.error(f"Failed to update config: {str(e)}")
             return False
+
+    async def bulk_upload_documents(
+        self, 
+        files: List[str], 
+        user_id: str, 
+        global_metadata: Optional[Dict[str, Any]] = None,
+        process_in_parallel: bool = True,
+        max_parallel_jobs: int = 3
+    ) -> Dict[str, Any]:
+        """Process multiple documents in bulk.
+        
+        Args:
+            files: List of file paths to process
+            user_id: User identifier
+            global_metadata: Metadata to apply to all files
+            process_in_parallel: Whether to process files in parallel
+            max_parallel_jobs: Maximum number of parallel jobs
+            
+        Returns:
+            Dictionary with batch processing results
+        """
+        import asyncio
+        from datetime import datetime
+        
+        batch_id = str(uuid.uuid4())
+        created_at = datetime.now()
+        results = []
+        
+        logger.info(f"Starting bulk upload for {len(files)} files (batch_id: {batch_id})")
+        
+        # Create a semaphore to limit parallel processing
+        semaphore = asyncio.Semaphore(max_parallel_jobs if process_in_parallel else 1)
+        
+        async def process_single_file(file_path: str) -> Dict[str, Any]:
+            """Process a single file with semaphore control."""
+            async with semaphore:
+                try:
+                    # Prepare metadata for this file
+                    file_metadata = dict(global_metadata) if global_metadata else {}
+                    file_metadata["batch_id"] = batch_id
+                    file_metadata["original_filename"] = os.path.basename(file_path)
+                    file_metadata["upload_filename"] = os.path.basename(file_path)
+                    
+                    # Create and start processing job
+                    job = await self.upload_document(file_path, user_id, file_metadata)
+                    
+                    return {
+                        "filename": os.path.basename(file_path),
+                        "job_id": job.job_id,
+                        "document_id": job.document_id,
+                        "status": "processing",
+                        "message": "File uploaded and processing started"
+                    }
+                    
+                except Exception as e:
+                    logger.error(f"Failed to process file {file_path}: {str(e)}")
+                    return {
+                        "filename": os.path.basename(file_path),
+                        "job_id": None,
+                        "document_id": None,
+                        "status": "failed",
+                        "message": "Failed to start processing",
+                        "error": str(e)
+                    }
+        
+        # Process all files
+        if process_in_parallel:
+            logger.info(f"Processing {len(files)} files in parallel (max {max_parallel_jobs} concurrent)")
+            results = await asyncio.gather(*[process_single_file(file_path) for file_path in files])
+        else:
+            logger.info(f"Processing {len(files)} files sequentially")
+            for file_path in files:
+                result = await process_single_file(file_path)
+                results.append(result)
+        
+        # Count successful and failed uploads
+        successful_uploads = sum(1 for r in results if r["status"] != "failed")
+        failed_uploads = len(results) - successful_uploads
+        
+        # Store batch information for status tracking
+        batch_info = {
+            "batch_id": batch_id,
+            "total_files": len(files),
+            "results": results,
+            "created_at": created_at,
+            "updated_at": datetime.now(),
+            "user_id": user_id,
+            "global_metadata": global_metadata
+        }
+        
+        # Store batch info in jobs dict with batch_id as key
+        self.jobs[batch_id] = batch_info
+        
+        logger.info(f"Bulk upload completed: {successful_uploads} successful, {failed_uploads} failed")
+        
+        return {
+            "batch_id": batch_id,
+            "total_files": len(files),
+            "successful_uploads": successful_uploads,
+            "failed_uploads": failed_uploads,
+            "results": results,
+            "message": f"Bulk upload initiated: {successful_uploads} files started processing, {failed_uploads} files failed"
+        }
+    
+    async def get_batch_status(self, batch_id: str) -> Optional[Dict[str, Any]]:
+        """Get the status of a bulk processing batch.
+        
+        Args:
+            batch_id: Batch identifier
+            
+        Returns:
+            Dictionary with batch status or None if not found
+        """
+        if batch_id not in self.jobs:
+            return None
+        
+        batch_info = self.jobs[batch_id]
+        updated_results = []
+        
+        # Update status for each file by checking individual jobs
+        for result in batch_info["results"]:
+            if result["job_id"]:
+                # Get current job status
+                job = await self.get_job_status(result["job_id"])
+                if job:
+                    updated_result = result.copy()
+                    updated_result["status"] = job.status
+                    if job.status == "completed":
+                        updated_result["message"] = "Processing completed successfully"
+                    elif job.status == "failed":
+                        updated_result["message"] = "Processing failed"
+                        updated_result["error"] = job.error_message
+                    elif job.status == "processing":
+                        updated_result["message"] = f"Processing... ({job.progress:.1%} complete)" if job.progress else "Processing..."
+                    updated_results.append(updated_result)
+                else:
+                    updated_results.append(result)
+            else:
+                updated_results.append(result)
+        
+        # Count statuses
+        completed_jobs = sum(1 for r in updated_results if r["status"] == "completed")
+        failed_jobs = sum(1 for r in updated_results if r["status"] == "failed")
+        in_progress_jobs = sum(1 for r in updated_results if r["status"] == "processing")
+        pending_jobs = sum(1 for r in updated_results if r["status"] == "pending")
+        
+        # Determine overall status
+        total_files = batch_info["total_files"]
+        if completed_jobs == total_files:
+            overall_status = "completed"
+        elif failed_jobs == total_files:
+            overall_status = "failed"
+        elif completed_jobs + failed_jobs == total_files:
+            overall_status = "partial_failure" if failed_jobs > 0 else "completed"
+        elif in_progress_jobs > 0:
+            overall_status = "processing"
+        else:
+            overall_status = "pending"
+        
+        # Update batch info
+        batch_info["results"] = updated_results
+        batch_info["updated_at"] = datetime.now()
+        
+        return {
+            "batch_id": batch_id,
+            "total_files": total_files,
+            "completed_jobs": completed_jobs,
+            "failed_jobs": failed_jobs,
+            "in_progress_jobs": in_progress_jobs,
+            "pending_jobs": pending_jobs,
+            "overall_status": overall_status,
+            "results": updated_results,
+            "created_at": batch_info["created_at"],
+            "updated_at": batch_info["updated_at"]
+        }

@@ -106,3 +106,44 @@ class SessionListResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+class BulkUploadRequest(BaseModel):
+    """Request model for bulk document upload."""
+    global_metadata: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Metadata to apply to all files")
+    process_in_parallel: bool = Field(default=True, description="Whether to process files in parallel")
+    max_parallel_jobs: int = Field(default=3, ge=1, le=10, description="Maximum number of parallel processing jobs")
+
+
+class FileUploadResult(BaseModel):
+    """Result for individual file upload."""
+    filename: str
+    job_id: Optional[str] = None
+    document_id: Optional[str] = None
+    status: JobStatus
+    message: str
+    error: Optional[str] = None
+
+
+class BulkUploadResponse(BaseModel):
+    """Response model for bulk document upload."""
+    batch_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    total_files: int
+    successful_uploads: int
+    failed_uploads: int
+    results: List[FileUploadResult]
+    message: str
+
+
+class BatchStatusResponse(BaseModel):
+    """Response model for batch processing status."""
+    batch_id: str
+    total_files: int
+    completed_jobs: int
+    failed_jobs: int
+    in_progress_jobs: int
+    pending_jobs: int
+    overall_status: str  # pending, processing, completed, partial_failure, failed
+    results: List[FileUploadResult]
+    created_at: datetime
+    updated_at: datetime
