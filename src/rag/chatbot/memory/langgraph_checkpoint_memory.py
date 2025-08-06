@@ -413,7 +413,7 @@ class LangGraphCheckpointMemory(BaseMemory):
             return False
     
     async def _update_user_profile_with_store(self, 
-                                           store: AsyncPostgresStore,
+                                           store: Any,  # AsyncPostgresStore type hint causes issues
                                            soeid: str, 
                                            query: str, 
                                            response: str, 
@@ -561,6 +561,65 @@ class LangGraphCheckpointMemory(BaseMemory):
             
         except Exception as e:
             logger.error(f"Failed to get chat history by SOEID: {e}")
+            return []
+    
+    async def get_session_history_by_soeid(self, session_id: str, soeid: str) -> List[Dict[str, Any]]:
+        """
+        Get session history filtered by SOEID.
+        
+        Args:
+            session_id: Session identifier
+            soeid: User SOEID to filter by
+            
+        Returns:
+            List of conversation messages for the specific user in the session
+        """
+        try:
+            # Get all messages for the session
+            all_messages = await self.get_history(session_id)
+            
+            # Filter messages by SOEID
+            filtered_messages = []
+            for msg in all_messages:
+                if msg.get("soeid") == soeid:
+                    filtered_messages.append(msg)
+            
+            logger.debug(f"Retrieved {len(filtered_messages)} messages for session {session_id} and SOEID {soeid}")
+            return filtered_messages
+            
+        except Exception as e:
+            logger.error(f"Failed to get session history by SOEID: {e}")
+            return []
+    
+    async def get_user_history_by_soeid(self, soeid: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """
+        Get user history by SOEID across all sessions. Alias for get_chat_history_by_soeid_and_date.
+        
+        Args:
+            soeid: User SOEID
+            limit: Maximum number of messages to return
+            
+        Returns:
+            List of conversation messages across all user sessions
+        """
+        # Use a reasonable default of 30 days for backward compatibility
+        return await self.get_chat_history_by_soeid_and_date(soeid, days=30, limit=limit)
+    
+    async def _list_thread_ids(self) -> List[str]:
+        """
+        List all thread IDs (session IDs) that have conversation history.
+        
+        Returns:
+            List of session IDs
+        """
+        try:
+            async with self._lock:
+                thread_ids = list(self._memory_storage.keys())
+                logger.debug(f"Found {len(thread_ids)} thread IDs in memory storage")
+                return thread_ids
+                
+        except Exception as e:
+            logger.error(f"Failed to list thread IDs: {e}")
             return []
     
     async def clear_session(self, session_id: str) -> bool:
@@ -714,7 +773,8 @@ class LangGraphCheckpointMemory(BaseMemory):
                                   limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """Get relevant history - for now, return recent history."""
         # For LangGraph implementation, we'll use recent history as relevant history
-        # In the future, this could be enhanced with semantic similarity search
+        # In the future, this could be enhanced with semantic similarity search using the query parameter
+        _ = query  # TODO: Use query for semantic similarity search in future implementation
         return await self.get_history(session_id, limit)
     
     
