@@ -116,6 +116,8 @@ class LangGraphCheckpointMemory(BaseMemory):
         self._checkpointer: Optional[AsyncPostgresSaver] = None
         self._store: Optional[AsyncPostgresStore] = None
         self._graph: Optional[StateGraph] = None
+        self._checkpointer_manager = None
+        self._store_manager = None
         self._initialized = False
         self._lock = asyncio.Lock()
         
@@ -136,19 +138,25 @@ class LangGraphCheckpointMemory(BaseMemory):
                 logger.info("Memory disabled - skipping component initialization")
                 return
             
-            # Initialize AsyncPostgresSaver for checkpoints
-            self._checkpointer = AsyncPostgresSaver.from_conn_string(self._connection_string)
+            # Initialize AsyncPostgresSaver for checkpoints using async context manager
+            checkpointer_manager = AsyncPostgresSaver.from_conn_string(self._connection_string)
+            self._checkpointer = await checkpointer_manager.__aenter__()
             
             # Setup checkpointer tables
             await self._checkpointer.setup()
             logger.info("AsyncPostgresSaver initialized and setup completed")
             
-            # Initialize AsyncPostgresStore for cross-thread memory
-            self._store = AsyncPostgresStore.from_conn_string(self._connection_string)
+            # Initialize AsyncPostgresStore for cross-thread memory using async context manager
+            store_manager = AsyncPostgresStore.from_conn_string(self._connection_string)
+            self._store = await store_manager.__aenter__()
             
             # Setup store tables
             await self._store.setup()
             logger.info("AsyncPostgresStore initialized and setup completed")
+            
+            # Store the context managers for proper cleanup
+            self._checkpointer_manager = checkpointer_manager
+            self._store_manager = store_manager
             
             # Create a simple LangGraph workflow for message handling
             self._graph = self._create_message_graph()
@@ -616,14 +624,24 @@ class LangGraphCheckpointMemory(BaseMemory):
     async def cleanup(self):
         """Clean up resources."""
         try:
-            # LangGraph components handle their own connection cleanup
-            if self._checkpointer:
-                # AsyncPostgresSaver handles cleanup automatically
-                pass
+            # Properly close the async context managers
+            if self._checkpointer_manager:
+                try:
+                    await self._checkpointer_manager.__aexit__(None, None, None)
+                    self._checkpointer_manager = None
+                    self._checkpointer = None
+                    logger.debug("AsyncPostgresSaver context manager closed")
+                except Exception as e:
+                    logger.warning(f"Error closing checkpointer context manager: {e}")
             
-            if self._store:
-                # AsyncPostgresStore handles cleanup automatically
-                pass
+            if self._store_manager:
+                try:
+                    await self._store_manager.__aexit__(None, None, None)
+                    self._store_manager = None
+                    self._store = None
+                    logger.debug("AsyncPostgresStore context manager closed")
+                except Exception as e:
+                    logger.warning(f"Error closing store context manager: {e}")
             
             self._initialized = False
             logger.info("LangGraph memory cleanup completed")
