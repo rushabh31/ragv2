@@ -136,25 +136,17 @@ class ChatbotService:
                          user_id: str,
                          query: str,
                          session_id: Optional[str] = None,
-                         use_retrieval: bool = True,
-                         use_history: bool = True,
-                         use_chat_history: bool = False,
+                         use_chat_history: bool = True,
                          chat_history_days: int = 7,
-                         enable_memory: Optional[bool] = None,
-                         enable_chat_history: Optional[bool] = None,
                          metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Process a chat query and generate a response.
         
         Args:
-            user_id: User identifier
+            user_id: User identifier (SOEID)
             query: User query text
             session_id: Optional session identifier
-            use_retrieval: Whether to use document retrieval
-            use_history: Whether to use conversation history
             use_chat_history: Whether to include chat history from other sessions by SOEID
             chat_history_days: Number of days of chat history to include (1-365)
-            enable_memory: Override memory enabled setting for this request
-            enable_chat_history: Override chat history enabled setting for this request
             metadata: Additional metadata for the query
             
         Returns:
@@ -163,25 +155,15 @@ class ChatbotService:
         # Get or create session
         session_id = await self._get_or_create_session(session_id, user_id)
         
-        # Initialize components to access memory for enable/disable
+        # Initialize components
         await self._init_components()
-        
-        # Handle memory enable/disable overrides
-        if enable_memory is not None and hasattr(self._memory, 'set_enabled'):
-            self._memory.set_enabled(enable_memory)
-        
-        if enable_chat_history is not None and hasattr(self._memory, 'set_chat_history_enabled'):
-            self._memory.set_chat_history_enabled(enable_chat_history)
         
         try:
             # Use the workflow manager to process the query using LangGraph
+            # Retrieval and history are always enabled as they're core functionality
             workflow_params = {
-                "use_retrieval": use_retrieval,
-                "use_history": use_history,
                 "use_chat_history": use_chat_history,
                 "chat_history_days": chat_history_days,
-                "enable_memory": enable_memory,
-                "enable_chat_history": enable_chat_history,
                 "metadata": metadata or {}
             }
             

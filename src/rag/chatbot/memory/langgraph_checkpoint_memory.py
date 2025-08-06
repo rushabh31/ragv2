@@ -81,16 +81,36 @@ class LangGraphCheckpointMemory(BaseMemory):
         
         # PostgreSQL configuration
         self._postgres_config = config.get("postgres", {})
-        self._connection_string = self._postgres_config.get("connection_string")
         self._schema_name = self._postgres_config.get("schema_name", "public")
         
-        if not self._connection_string:
-            raise MemoryError("PostgreSQL connection string is required")
-        
-        # Add schema to connection string if custom schema is specified
-        if self._schema_name != "public":
-            separator = "&" if "?" in self._connection_string else "?"
-            self._connection_string += f"{separator}options=-c%20search_path%3D{self._schema_name}%2Cpublic"
+        # Build connection string using environment variables
+        try:
+            from src.utils.env_manager import env
+            
+            # Get database name from config or environment
+            database = self._postgres_config.get("database") or env.get_string("POSTGRES_DB")
+            
+            # Build connection string using env manager
+            self._connection_string = env.build_postgresql_connection_string(
+                database=database,
+                schema=self._schema_name if self._schema_name != "public" else None,
+                ssl_mode=self._postgres_config.get("ssl_mode", "prefer")
+            )
+            
+            logger.info(f"Built PostgreSQL connection string using environment variables")
+            
+        except Exception as e:
+            # Fallback to explicit connection string if env variables not available
+            self._connection_string = self._postgres_config.get("connection_string")
+            if not self._connection_string:
+                raise MemoryError(f"Failed to build PostgreSQL connection string from environment variables: {e}")
+            
+            logger.warning("Using explicit connection string from config (env variables not available)")
+            
+            # Add schema to connection string if custom schema is specified
+            if self._schema_name != "public":
+                separator = "&" if "?" in self._connection_string else "?"
+                self._connection_string += f"{separator}options=-c%20search_path%3D{self._schema_name}%2Cpublic"
         
         # Components (initialized lazily)
         self._checkpointer: Optional[AsyncPostgresSaver] = None

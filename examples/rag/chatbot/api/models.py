@@ -40,9 +40,7 @@ class ChatRequest(BaseModel):
     """Request model for chat."""
     query: str
     session_id: Optional[str] = None
-    use_retrieval: bool = True
-    use_history: bool = True
-    use_chat_history: bool = False
+    use_chat_history: bool = True
     chat_history_days: int = Field(default=7, ge=1, le=365, description="Number of days of chat history to include (1-365)")
     metadata: Dict[str, Any] = Field(default_factory=dict)
 

@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 import json
+import yaml
 from functools import lru_cache
 
 logger = logging.getLogger(__name__)
@@ -75,6 +76,9 @@ class EnvironmentManager:
         if auto_load_dotenv:
             self._load_dotenv()
         
+        # Load PostgreSQL configuration from YAML secrets file
+        self._load_postgresql_config()
+        
         # Register common environment variables
         self._register_common_vars()
     
@@ -100,6 +104,96 @@ class EnvironmentManager:
                 
         except ImportError:
             logger.warning("python-dotenv not installed, skipping .env file loading")
+    
+    def _load_postgresql_config(self) -> None:
+        """Load PostgreSQL configuration from YAML secrets file."""
+        try:
+            # Get the path to the PostgreSQL configuration file from environment
+            pgvector_config_path = os.environ.get("PGVECTOR_CONFIGURATION_PATH")
+            
+            if not pgvector_config_path:
+                logger.debug("PGVECTOR_CONFIGURATION_PATH not set, skipping PostgreSQL YAML config loading")
+                return
+            
+            config_path = Path(pgvector_config_path)
+            if not config_path.exists():
+                logger.warning(f"PostgreSQL configuration file not found: {config_path}")
+                return
+            
+            # Load YAML configuration
+            with open(config_path, 'r') as f:
+                config = yaml.safe_load(f)
+            
+            # Extract PostgreSQL credentials
+            if isinstance(config, dict):
+                # Look for PostgreSQL/PGVector configuration in various possible structures
+                pg_config = None
+                
+                # Try different possible keys
+                for key in ['postgresql', 'postgres', 'pgvector', 'database', 'db']:
+                    if key in config:
+                        pg_config = config[key]
+                        break
+                
+                # If not found at root level, try nested structures
+                if not pg_config:
+                    for section in ['credentials', 'auth', 'connection']:
+                        if section in config:
+                            section_config = config[section]
+                            for key in ['postgresql', 'postgres', 'pgvector']:
+                                if key in section_config:
+                                    pg_config = section_config[key]
+                                    break
+                            if pg_config:
+                                break
+                
+                if pg_config and isinstance(pg_config, dict):
+                    # Extract username and password
+                    username = pg_config.get('username') or pg_config.get('user')
+                    password = pg_config.get('password') or pg_config.get('pass')
+                    host = pg_config.get('host')
+                    port = pg_config.get('port')
+                    database = pg_config.get('database') or pg_config.get('db')
+                    
+                    # Set environment variables if credentials are found
+                    if username:
+                        os.environ['PGVECTOR_USERNAME'] = username
+                        logger.info("Set PGVECTOR_USERNAME from YAML configuration")
+                    
+                    if password:
+                        os.environ['PGVECTOR_PASSWORD'] = password
+                        logger.info("Set PGVECTOR_PASSWORD from YAML configuration")
+                    
+                    # Also set standard PostgreSQL environment variables
+                    if host:
+                        os.environ['POSTGRES_HOST'] = host
+                        logger.debug("Set POSTGRES_HOST from YAML configuration")
+                    
+                    if port:
+                        os.environ['POSTGRES_PORT'] = str(port)
+                        logger.debug("Set POSTGRES_PORT from YAML configuration")
+                    
+                    if database:
+                        os.environ['POSTGRES_DB'] = database
+                        logger.debug("Set POSTGRES_DB from YAML configuration")
+                    
+                    if username:
+                        os.environ['POSTGRES_USER'] = username
+                        logger.debug("Set POSTGRES_USER from YAML configuration")
+                    
+                    if password:
+                        os.environ['POSTGRES_PASSWORD'] = password
+                        logger.debug("Set POSTGRES_PASSWORD from YAML configuration")
+                        
+                else:
+                    logger.warning("PostgreSQL configuration not found in expected format in YAML file")
+            else:
+                logger.warning("Invalid YAML configuration format")
+                
+        except yaml.YAMLError as e:
+            logger.error(f"Error parsing PostgreSQL YAML configuration: {e}")
+        except Exception as e:
+            logger.error(f"Error loading PostgreSQL configuration from YAML: {e}")
     
     def _register_common_vars(self) -> None:
         """Register commonly used environment variables."""
@@ -215,6 +309,25 @@ class EnvironmentManager:
             name="POSTGRES_PASSWORD",
             var_type=EnvVarType.STRING,
             description="PostgreSQL password"
+        ))
+        
+        # PGVector specific credentials
+        self.register_var(EnvVarConfig(
+            name="PGVECTOR_USERNAME",
+            var_type=EnvVarType.STRING,
+            description="PGVector/PostgreSQL username from YAML configuration"
+        ))
+        
+        self.register_var(EnvVarConfig(
+            name="PGVECTOR_PASSWORD",
+            var_type=EnvVarType.STRING,
+            description="PGVector/PostgreSQL password from YAML configuration"
+        ))
+        
+        self.register_var(EnvVarConfig(
+            name="PGVECTOR_CONFIGURATION_PATH",
+            var_type=EnvVarType.PATH,
+            description="Path to YAML file containing PostgreSQL credentials"
         ))
         
         # Application Configuration
@@ -476,6 +589,57 @@ class EnvironmentManager:
             }
         
         return summary
+    
+    def build_postgresql_connection_string(
+        self, 
+        database: Optional[str] = None,
+        schema: Optional[str] = None,
+        ssl_mode: str = "prefer"
+    ) -> str:
+        """
+        Build a PostgreSQL connection string using environment variables.
+        
+        Args:
+            database: Database name (if not provided, uses env variable)
+            schema: Schema name to include in connection string
+            ssl_mode: SSL mode for connection
+            
+        Returns:
+            PostgreSQL connection string
+            
+        Raises:
+            EnvVarError: If required credentials are missing
+        """
+        # Get credentials from environment variables (prioritize PGVECTOR_* variables)
+        username = self.get_string("PGVECTOR_USERNAME") or self.get_string("POSTGRES_USER")
+        password = self.get_string("PGVECTOR_PASSWORD") or self.get_string("POSTGRES_PASSWORD")
+        host = self.get_string("POSTGRES_HOST", "localhost")
+        port = self.get_int("POSTGRES_PORT", 5432)
+        db_name = database or self.get_string("POSTGRES_DB")
+        
+        if not username:
+            raise EnvVarError("PostgreSQL username not found in environment variables (PGVECTOR_USERNAME or POSTGRES_USER)")
+        
+        if not db_name:
+            raise EnvVarError("PostgreSQL database name not found in environment variables (POSTGRES_DB)")
+        
+        # Build connection string
+        if password:
+            base_url = f"postgresql://{username}:{password}@{host}:{port}/{db_name}"
+        else:
+            base_url = f"postgresql://{username}@{host}:{port}/{db_name}"
+        
+        # Add SSL mode
+        params = [f"sslmode={ssl_mode}"]
+        
+        # Add schema to search_path if specified
+        if schema:
+            params.append(f"options=-c%20search_path%3D{schema}%2Cpublic")
+        
+        if params:
+            base_url += "?" + "&".join(params)
+        
+        return base_url
 
 
 # Global instance for easy access

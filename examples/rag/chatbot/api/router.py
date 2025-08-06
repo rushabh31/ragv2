@@ -33,12 +33,8 @@ def get_chatbot_service():
 async def send_message(
     query: str = Form(...),
     session_id: Optional[str] = Form(None),
-    use_retrieval: bool = Form(True),
-    use_history: bool = Form(True),
-    use_chat_history: bool = Form(False),
+    use_chat_history: bool = Form(True),
     chat_history_days: int = Form(7),
-    enable_memory: Optional[bool] = Form(None),
-    enable_chat_history: Optional[bool] = Form(None),
     metadata_json: Optional[str] = Form(None),
     soeid: str = Header(...),
     service: ChatbotService = Depends(get_chatbot_service)
@@ -62,12 +58,8 @@ async def send_message(
             user_id=soeid,
             query=query,
             session_id=session_id,
-            use_retrieval=use_retrieval,
-            use_history=use_history,
             use_chat_history=use_chat_history,
             chat_history_days=chat_history_days,
-            enable_memory=enable_memory,
-            enable_chat_history=enable_chat_history,
             metadata=metadata
         )
         
@@ -104,8 +96,6 @@ async def send_message_json(
             user_id=soeid,
             query=request.query,
             session_id=request.session_id,
-            use_retrieval=request.use_retrieval,
-            use_history=request.use_history,
             use_chat_history=request.use_chat_history,
             chat_history_days=request.chat_history_days,
             metadata=metadata
@@ -253,34 +243,6 @@ async def set_chat_history_enabled(
     }
 
 
-@router.get("/sessions/{soeid}/history", response_model=SOEIDHistoryResponse)
-async def get_soeid_history_by_sessions(
-    soeid: str,
-    limit: Optional[int] = Query(None, description="Maximum number of sessions to return"),
-    service: ChatbotService = Depends(get_chatbot_service)
-):
-    """Get chat history for a SOEID, organized by sessions (alternative endpoint)."""
-    result = await service.get_all_history_by_soeid(soeid)
-    
-    # Apply limit if specified
-    if limit and result.get("sessions"):
-        result["sessions"] = result["sessions"][:limit]
-        result["total_sessions"] = len(result["sessions"])
-    
-    return SOEIDHistoryResponse(**result)
-
-
-@router.get("/threads/{thread_id}/history", response_model=SessionHistoryWithSOEIDResponse)
-async def get_thread_history(
-    thread_id: str,
-    limit: Optional[int] = Query(None, description="Maximum number of messages to return"),
-    service: ChatbotService = Depends(get_chatbot_service)
-):
-    """Get chat history for a specific thread (session) ID."""
-    result = await service.get_session_history_with_soeid(thread_id)
-    
-    # Apply limit if specified
-    if limit and result.get("messages"):
-        result["messages"] = result["messages"][-limit:]  # Get most recent messages
-    
-    return SessionHistoryWithSOEIDResponse(**result)
+# Note: Removed duplicate endpoints that were redundant with existing ones above
+# - get_soeid_history_by_sessions is duplicate of get_all_history_by_soeid
+# - get_thread_history is duplicate of get_session_history_with_soeid
