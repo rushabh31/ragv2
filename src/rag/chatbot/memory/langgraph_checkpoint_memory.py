@@ -1,143 +1,108 @@
-"""Production-grade LangGraph memory implementation using AsyncPostgresSaver with SOEID profiles."""
+"""Production-grade LangGraph memory implementation using AsyncPostgresSaver for chat history."""
 
 import logging
 import asyncio
 import uuid
-import json
-from typing import Dict, Any, List, Optional, Tuple, Union
+from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
-import asyncpg
 
-# Import our custom embedding models and factories
+# Import LangGraph components
 try:
-    from ...models.embedding.vertex_embedding import VertexEmbeddingAI
-    from ...models.embedding.openai_embedding import OpenAIEmbeddingAI
-    from ...models.embedding.azure_openai_embedding import AzureOpenAIEmbeddingAI
-    from ...models.embedding.embedding_factory import EmbeddingModelFactory
-    CUSTOM_EMBEDDINGS_AVAILABLE = True
-except ImportError:
-    CUSTOM_EMBEDDINGS_AVAILABLE = False
-    VertexEmbeddingAI = None
-    OpenAIEmbeddingAI = None
-    AzureOpenAIEmbeddingAI = None
-    EmbeddingModelFactory = None
-
-# Import LangGraph checkpoint components
-try:
-    from langgraph.checkpoint.memory import InMemorySaver
-    from langgraph.checkpoint.base import BaseCheckpointSaver, Checkpoint
-    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
-    LANGGRAPH_CHECKPOINT_AVAILABLE = True
-except ImportError:
-    LANGGRAPH_CHECKPOINT_AVAILABLE = False
-    InMemorySaver = None
-    BaseCheckpointSaver = None
-    Checkpoint = None
-    JsonPlusSerializer = None
-
-# Import async PostgreSQL checkpoint saver
-try:
+    from langgraph.graph import StateGraph, MessagesState, START
     from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-    ASYNC_POSTGRES_CHECKPOINT_AVAILABLE = True
-except ImportError:
-    AsyncPostgresSaver = None
-    ASYNC_POSTGRES_CHECKPOINT_AVAILABLE = False
-
-# Import LangGraph store components for cross-thread memory
-try:
-    from langgraph.store.memory import InMemoryStore
-    from langgraph.store.base import BaseStore, Item
-    LANGGRAPH_STORE_AVAILABLE = True
-except ImportError:
-    LANGGRAPH_STORE_AVAILABLE = False
-    InMemoryStore = None
-    BaseStore = None
-    Item = None
-
-try:
     from langgraph.store.postgres.aio import AsyncPostgresStore
-    POSTGRES_STORE_AVAILABLE = True
+    from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
+    LANGGRAPH_AVAILABLE = True
 except ImportError:
+    LANGGRAPH_AVAILABLE = False
+    StateGraph = None
+    MessagesState = None
+    START = None
+    AsyncPostgresSaver = None
     AsyncPostgresStore = None
-    POSTGRES_STORE_AVAILABLE = False
-    POSTGRES_STORE_AVAILABLE = False
+    HumanMessage = None
+    AIMessage = None
+    BaseMessage = None
 
-from ..base_memory import BaseMemory
+from src.rag.chatbot.memory.base_memory import BaseMemory
+from src.rag.core.exceptions.exceptions import MemoryError
 
 logger = logging.getLogger(__name__)
 
 
-class ProductionLangGraphMemory(BaseMemory):
+class LangGraphCheckpointMemory(BaseMemory):
     """
-    Production-grade LangGraph memory implementation with AsyncPostgresSaver and AsyncPostgresStore.
+    Production LangGraph memory implementation using AsyncPostgresSaver and AsyncPostgresStore.
     
-    Features:
-    - AsyncPostgresSaver for thread-scoped conversation history
-    - AsyncPostgresStore for cross-thread user profiles and long-term memory
-    - SOEID-based user namespacing
-    - Proper checkpoint and state management
-    - Production-ready error handling and connection management
+    This implementation follows LangGraph best practices:
+    - Uses AsyncPostgresSaver for thread-scoped conversation checkpoints
+    - Uses AsyncPostgresStore for cross-thread user memories and profiles
+    - Supports SOEID-based user namespacing
+    - Provides enable/disable functionality
+    - Handles connection management and cleanup properly
     """
     
     def __init__(self, config: Dict[str, Any]):
         """
-        Initialize production LangGraph memory system.
+        Initialize LangGraph checkpoint memory.
         
         Args:
             config: Configuration dictionary with the following structure:
                 {
-                    "store_type": "postgres",  # Required for production
+                    "enabled": True,
+                    "chat_history_enabled": True,
+                    "max_history_days": 30,
+                    "store_type": "postgres",
                     "postgres": {
                         "connection_string": "postgresql://user:pass@host:port/db",
-                        "pool_size": 10,
-                        "max_overflow": 20
+                        "schema_name": "chat_memory",  # Optional custom schema
+                        "pool_min_size": 1,
+                        "pool_max_size": 10
                     },
-                    "checkpointer": {
-                        "serde": {
-                            "pickle_fallback": True,
-                            "encryption_key": "optional-aes-key"
-                        }
-                    },
-                    "store": {
-                        "index": {
-                            "embed": "openai:text-embedding-3-small",  # Optional for semantic search
-                            "dims": 1536,
-                            "fields": ["content", "metadata"]
-                        }
-                    },
-                    "memory_enabled": True,
                     "max_history": 50
                 }
         """
         super().__init__(config)
         
+        if not LANGGRAPH_AVAILABLE:
+            raise MemoryError(
+                "LangGraph is not available. Install with: "
+                "pip install langgraph langgraph-checkpoint-postgres langgraph-store-postgres"
+            )
+        
         # Configuration
-        self._store_type = config.get("store_type", "postgres")
-        self._postgres_config = config.get("postgres", {})
-        self._checkpointer_config = config.get("checkpointer", {})
-        self._store_config = config.get("store", {})
-        self._memory_enabled = config.get("memory_enabled", True)
+        self._config = config
+        self._enabled = config.get("enabled", True)
+        self._chat_history_enabled = config.get("chat_history_enabled", True)
+        self._max_history_days = config.get("max_history_days", 30)
         self._max_history = config.get("max_history", 50)
+        self._store_type = config.get("store_type", "postgres")
         
-        # Connection management
+        # PostgreSQL configuration
+        self._postgres_config = config.get("postgres", {})
         self._connection_string = self._postgres_config.get("connection_string")
-        self._pool_size = self._postgres_config.get("pool_size", 10)
-        self._max_overflow = self._postgres_config.get("max_overflow", 20)
+        self._schema_name = self._postgres_config.get("schema_name", "public")
         
-        # Components
+        if not self._connection_string:
+            raise MemoryError("PostgreSQL connection string is required")
+        
+        # Add schema to connection string if custom schema is specified
+        if self._schema_name != "public":
+            separator = "&" if "?" in self._connection_string else "?"
+            self._connection_string += f"{separator}options=-c%20search_path%3D{self._schema_name}%2Cpublic"
+        
+        # Components (initialized lazily)
         self._checkpointer: Optional[AsyncPostgresSaver] = None
         self._store: Optional[AsyncPostgresStore] = None
-        self._serializer = None
-        
-        # Internal state
+        self._graph: Optional[StateGraph] = None
         self._initialized = False
         self._lock = asyncio.Lock()
         
-        logger.info(f"Initialized ProductionLangGraphMemory with store_type: {self._store_type}")
+        logger.info(f"LangGraph checkpoint memory initialized with schema: {self._schema_name}")
     
     async def _ensure_initialized(self):
-        """Ensure the memory system is properly initialized."""
+        """Ensure components are initialized."""
         if not self._initialized:
             async with self._lock:
                 if not self._initialized:
@@ -145,260 +110,130 @@ class ProductionLangGraphMemory(BaseMemory):
                     self._initialized = True
     
     async def _initialize_components(self):
-        """Initialize checkpointer and store components."""
+        """Initialize LangGraph components."""
         try:
-            if not self._memory_enabled:
-                logger.info("Memory disabled - using no-op components")
+            if not self._enabled:
+                logger.info("Memory disabled - skipping component initialization")
                 return
             
-            if self._store_type != "postgres":
-                raise ValueError("Production implementation requires postgres store_type")
-            
-            if not self._connection_string:
-                raise ValueError("PostgreSQL connection string is required for production")
-            
-            # Validate dependencies
-            if not ASYNC_POSTGRES_CHECKPOINT_AVAILABLE:
-                raise ImportError(
-                    "AsyncPostgresSaver not available. Install with: "
-                    "pip install langgraph-checkpoint-postgres"
-                )
-            
-            if not POSTGRES_STORE_AVAILABLE:
-                raise ImportError(
-                    "AsyncPostgresStore not available. Install with: "
-                    "pip install langgraph-store-postgres"
-                )
-            
-            # Initialize serializer with optional encryption
-            serde_config = self._checkpointer_config.get("serde", {})
-            if serde_config.get("encryption_key"):
-                from langgraph.checkpoint.serde.encrypted import EncryptedSerializer
-                self._serializer = EncryptedSerializer.from_pycryptodome_aes(
-                    key=serde_config["encryption_key"]
-                )
-                logger.info("Initialized encrypted serializer")
-            else:
-                self._serializer = JsonPlusSerializer(
-                    pickle_fallback=serde_config.get("pickle_fallback", True)
-                )
-                logger.info("Initialized JSON+ serializer with pickle fallback")
-            
-            # Initialize AsyncPostgresSaver for checkpointing
-            self._checkpointer = AsyncPostgresSaver.from_conn_string(
-                self._connection_string,
-                serde=self._serializer
-            )
+            # Initialize AsyncPostgresSaver for checkpoints
+            self._checkpointer = AsyncPostgresSaver.from_conn_string(self._connection_string)
             
             # Setup checkpointer tables
             await self._checkpointer.setup()
             logger.info("AsyncPostgresSaver initialized and setup completed")
             
             # Initialize AsyncPostgresStore for cross-thread memory
-            store_index_config = self._store_config.get("index")
-            embeddings_config = self._store_config.get("embeddings")
-            
-            if store_index_config or embeddings_config:
-                # Initialize with semantic search capabilities
-                store_kwargs = {}
-                
-                if store_index_config:
-                    store_kwargs["index"] = store_index_config
-                
-                if embeddings_config:
-                    # Configure VertexAI embeddings for semantic search
-                    embeddings_model = await self._create_embeddings_model(embeddings_config)
-                    if embeddings_model:
-                        store_kwargs["embeddings"] = embeddings_model
-                        logger.info(f"Configured embeddings: {embeddings_config.get('provider', 'unknown')}")
-                
-                self._store = AsyncPostgresStore.from_conn_string(
-                    self._connection_string,
-                    **store_kwargs
-                )
-                logger.info("AsyncPostgresStore initialized with semantic search and embeddings")
-            else:
-                # Initialize without semantic search
-                self._store = AsyncPostgresStore.from_conn_string(
-                    self._connection_string
-                )
-                logger.info("AsyncPostgresStore initialized without semantic search")
+            self._store = AsyncPostgresStore.from_conn_string(self._connection_string)
             
             # Setup store tables
             await self._store.setup()
-            logger.info("AsyncPostgresStore setup completed")
+            logger.info("AsyncPostgresStore initialized and setup completed")
+            
+            # Create a simple LangGraph workflow for message handling
+            self._graph = self._create_message_graph()
             
         except Exception as e:
             logger.error(f"Failed to initialize LangGraph components: {e}")
-            raise
+            raise MemoryError(f"Initialization failed: {e}") from e
     
-    async def _create_embeddings_model(self, embeddings_config: Dict[str, Any]):
-        """
-        Create embeddings model for LangGraph store semantic search using our custom models.
+    def _create_message_graph(self) -> StateGraph:
+        """Create a simple LangGraph workflow for message handling."""
         
-        Args:
-            embeddings_config: Configuration dictionary with provider and model settings
-            
-        Returns:
-            Embeddings model instance or None if creation fails
-        """
-        try:
-            if not CUSTOM_EMBEDDINGS_AVAILABLE:
-                logger.warning("Custom embedding models not available - check imports")
-                return None
-                
-            provider = embeddings_config.get("provider", "vertex_ai")
-            model_name = embeddings_config.get("model", "text-embedding-004")
-            
-            # Create embeddings model using our custom models with universal auth
-            if provider == "vertex_ai" or provider == "google_vertexai":
-                # Use our custom VertexEmbeddingAI with universal auth token service
-                vertex_config = embeddings_config.get("config", {})
-                
-                # Create VertexAI embeddings model with our auth system
-                embeddings_model = VertexEmbeddingAI(
-                    model_name=model_name,
-                    **vertex_config
-                )
-                
-                # Test authentication and initialize model
-                try:
-                    token = embeddings_model.get_coin_token()
-                    if token:
-                        # Initialize the model with proper authentication
-                        await embeddings_model._init_model()
-                        logger.info(f"Created and authenticated VertexAI embeddings model: {model_name}")
-                        return embeddings_model
-                    else:
-                        logger.warning("VertexAI embeddings authentication failed - no token")
-                        return None
-                except Exception as auth_error:
-                    logger.error(f"VertexAI embeddings auth/init error: {auth_error}")
-                    return None
-                
-            elif provider == "openai" or provider == "openai_universal":
-                # Use our custom OpenAIEmbeddingAI with universal auth
-                openai_config = embeddings_config.get("config", {})
-                
-                embeddings_model = OpenAIEmbeddingAI(
-                    model=model_name,
-                    **openai_config
-                )
-                
-                # Test authentication and initialize model
-                try:
-                    token = embeddings_model.get_coin_token()
-                    if token:
-                        # OpenAI models don't need explicit async init like Vertex AI
-                        logger.info(f"Created and authenticated OpenAI embeddings model: {model_name}")
-                        return embeddings_model
-                    else:
-                        logger.warning("OpenAI embeddings authentication failed - no token")
-                        return None
-                except Exception as auth_error:
-                    logger.error(f"OpenAI embeddings auth error: {auth_error}")
-                    return None
-                
-            elif provider == "azure_openai":
-                # Use our custom AzureOpenAIEmbeddingAI with universal auth
-                azure_config = embeddings_config.get("config", {})
-                
-                embeddings_model = AzureOpenAIEmbeddingAI(
-                    model=model_name,
-                    **azure_config
-                )
-                
-                # Test authentication
-                try:
-                    token = embeddings_model.get_coin_token()
-                    if token:
-                        logger.info(f"Created Azure OpenAI embeddings model with universal auth: {model_name}")
-                        return embeddings_model
-                    else:
-                        logger.warning("Azure OpenAI embeddings authentication failed")
-                        return None
-                except Exception as auth_error:
-                    logger.error(f"Azure OpenAI embeddings auth error: {auth_error}")
-                    return None
-                
-            else:
-                # Try using the embedding factory as fallback
-                try:
-                    embeddings_model = EmbeddingModelFactory.create_model(
-                        provider,
-                        model_name,
-                        **embeddings_config.get("config", {})
-                    )
-                    
-                    if embeddings_model and hasattr(embeddings_model, 'get_coin_token'):
-                        token = embeddings_model.get_coin_token()
-                        if token:
-                            logger.info(f"Created {provider} embeddings model via factory with universal auth: {model_name}")
-                            return embeddings_model
-                    
-                    logger.warning(f"Unsupported embeddings provider or auth failed: {provider}")
-                    return None
-                    
-                except Exception as factory_error:
-                    logger.error(f"Factory creation failed for {provider}: {factory_error}")
-                    return None
-                
-        except Exception as e:
-            logger.error(f"Failed to create custom embeddings model: {e}")
-            return None
+        async def process_messages(state: MessagesState):
+            """Simple node that processes messages without modification."""
+            return state
+        
+        # Create a minimal graph for checkpoint management
+        workflow = StateGraph(MessagesState)
+        workflow.add_node("process", process_messages)
+        workflow.add_edge(START, "process")
+        
+        return workflow.compile(checkpointer=self._checkpointer, store=self._store)
     
     def _get_thread_config(self, session_id: str, soeid: Optional[str] = None) -> Dict[str, Any]:
         """
-        Get thread configuration with proper namespacing.
+        Get thread configuration for LangGraph operations.
         
         Args:
-            session_id: Session/thread identifier
-            soeid: User SOEID for namespacing
+            session_id: Session identifier
+            soeid: Optional user SOEID for namespacing
             
         Returns:
-            Configuration dictionary for LangGraph operations
+            Thread configuration dictionary
         """
         config = {
             "configurable": {
                 "thread_id": session_id,
-                "checkpoint_ns": "",  # Default namespace
+                "checkpoint_ns": "",
             }
         }
         
         if soeid:
+            # Use SOEID-based namespace for user isolation
             config["configurable"]["user_id"] = soeid
-            # Use SOEID-based namespace for user-specific threading
             config["configurable"]["checkpoint_ns"] = f"user:{soeid}"
         
         return config
     
     def _get_user_namespace(self, soeid: str) -> Tuple[str, ...]:
-        """
-        Get user namespace for store operations.
-        
-        Args:
-            soeid: User SOEID
-            
-        Returns:
-            Namespace tuple for store operations
-        """
+        """Get namespace for user-specific store operations."""
         return (soeid, "memories")
     
-    async def add(self, session_id: str, query: str, response: str, metadata: Optional[Dict[str, Any]] = None):
+    def _convert_to_langchain_messages(self, messages: List[Dict[str, Any]]) -> List[BaseMessage]:
+        """Convert message dictionaries to LangChain message objects."""
+        langchain_messages = []
+        
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            
+            if role == "user":
+                langchain_messages.append(HumanMessage(content=content))
+            elif role == "assistant":
+                langchain_messages.append(AIMessage(content=content))
+            else:
+                # Default to HumanMessage for unknown roles
+                langchain_messages.append(HumanMessage(content=content))
+        
+        return langchain_messages
+    
+    def _convert_from_langchain_messages(self, messages: List[BaseMessage]) -> List[Dict[str, Any]]:
+        """Convert LangChain message objects to dictionaries."""
+        converted = []
+        
+        for msg in messages:
+            role = "user" if isinstance(msg, HumanMessage) else "assistant"
+            converted.append({
+                "role": role,
+                "content": msg.content,
+                "timestamp": datetime.now().isoformat()
+            })
+        
+        return converted
+    
+    async def add(self, 
+                  session_id: str, 
+                  query: str, 
+                  response: str, 
+                  metadata: Optional[Dict[str, Any]] = None) -> bool:
         """
-        Add a message exchange to the conversation history.
+        Add a conversation exchange to memory.
         
         Args:
             session_id: Session identifier
             query: User query
             response: Assistant response
-            metadata: Optional metadata including SOEID
+            metadata: Optional metadata (should contain 'soeid' for user identification)
+            
+        Returns:
+            True if successful, False otherwise
         """
         await self._ensure_initialized()
         
-        if not self._memory_enabled or not self._checkpointer:
-            logger.debug("Memory disabled or checkpointer not available")
-            return
+        if not self._enabled or not self._chat_history_enabled:
+            logger.debug("Memory or chat history disabled")
+            return True
         
         try:
             # Extract SOEID from metadata
@@ -407,68 +242,36 @@ class ProductionLangGraphMemory(BaseMemory):
             # Get thread configuration
             config = self._get_thread_config(session_id, soeid)
             
-            # Create message objects
+            # Create messages for the conversation
             messages = [
-                {
-                    "role": "user",
-                    "content": query,
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "session_id": session_id,
-                    "soeid": soeid
-                },
-                {
-                    "role": "assistant", 
-                    "content": response,
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "session_id": session_id,
-                    "soeid": soeid
-                }
+                HumanMessage(content=query),
+                AIMessage(content=response)
             ]
             
-            # Store in checkpointer (thread-scoped)
-            checkpoint_data = {
-                "messages": messages,
-                "metadata": metadata or {}
-            }
-            
-            # Create checkpoint
-            checkpoint = Checkpoint(
-                v=1,
-                ts=datetime.utcnow().isoformat(),
-                id=str(uuid.uuid4()),
-                channel_values=checkpoint_data,
-                channel_versions={},
-                versions_seen={}
-            )
-            
-            # Save checkpoint
-            await self._checkpointer.aput(
-                config=config,
-                checkpoint=checkpoint,
-                metadata={"source": "conversation", "step": 1},
-                new_versions={}
+            # Use LangGraph to store the conversation
+            await self._graph.ainvoke(
+                {"messages": messages},
+                config=config
             )
             
             # Also store user profile information in cross-thread store if SOEID provided
             if soeid and self._store:
-                await self._update_user_profile(soeid, query, response, session_id)
+                await self._update_user_profile(soeid, query, response, session_id, metadata)
             
             logger.debug(f"Added conversation to memory for session {session_id}")
+            return True
             
         except Exception as e:
             logger.error(f"Failed to add conversation to memory: {e}")
-            raise
+            return False
     
-    async def _update_user_profile(self, soeid: str, query: str, response: str, session_id: str):
-        """
-        Update user profile with conversation insights.
-        
-        Args:
-            soeid: User SOEID
-            query: User query
-            response: Assistant response
-            session_id: Session identifier
-        """
+    async def _update_user_profile(self, 
+                                   soeid: str, 
+                                   query: str, 
+                                   response: str, 
+                                   session_id: str,
+                                   metadata: Optional[Dict[str, Any]] = None):
+        """Update user profile with conversation insights."""
         try:
             namespace = self._get_user_namespace(soeid)
             
@@ -476,12 +279,12 @@ class ProductionLangGraphMemory(BaseMemory):
             memory_id = str(uuid.uuid4())
             memory_data = {
                 "conversation_snippet": {
-                    "query": query[:500],  # Truncate for storage
+                    "query": query[:500],  # Truncate for storage efficiency
                     "response": response[:500],
                     "session_id": session_id,
-                    "timestamp": datetime.utcnow().isoformat()
+                    "timestamp": datetime.now().isoformat(),
+                    "metadata": metadata or {}
                 },
-                "topics": self._extract_topics(query),
                 "interaction_type": "chat"
             }
             
@@ -497,22 +300,6 @@ class ProductionLangGraphMemory(BaseMemory):
         except Exception as e:
             logger.error(f"Failed to update user profile: {e}")
     
-    def _extract_topics(self, text: str) -> List[str]:
-        """
-        Extract topics from text (simple keyword extraction).
-        In production, this could use NLP models.
-        
-        Args:
-            text: Input text
-            
-        Returns:
-            List of extracted topics/keywords
-        """
-        # Simple keyword extraction - in production use proper NLP
-        import re
-        words = re.findall(r'\b\w{4,}\b', text.lower())
-        return list(set(words[:10]))  # Return unique words, max 10
-    
     async def get_history(self, session_id: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """
         Get conversation history for a session.
@@ -526,31 +313,48 @@ class ProductionLangGraphMemory(BaseMemory):
         """
         await self._ensure_initialized()
         
-        if not self._memory_enabled or not self._checkpointer:
-            logger.debug("Memory disabled or checkpointer not available")
+        if not self._enabled or not self._checkpointer:
             return []
         
         try:
-            # Get thread configuration
             config = self._get_thread_config(session_id)
             
-            # Get state history
-            history = []
-            async for state_snapshot in self._checkpointer.alist(config):
-                if state_snapshot.values and "messages" in state_snapshot.values:
-                    messages = state_snapshot.values["messages"]
-                    history.extend(messages)
+            # Get the latest state for this thread
+            state = await self._graph.aget_state(config)
             
-            # Sort by timestamp and apply limit
-            history.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+            if state and state.values and "messages" in state.values:
+                messages = state.values["messages"]
+                
+                # Convert LangChain messages to dictionaries
+                history = self._convert_from_langchain_messages(messages)
+                
+                # Apply date filtering if configured
+                if self._max_history_days > 0:
+                    cutoff_date = datetime.now() - timedelta(days=self._max_history_days)
+                    filtered_history = []
+                    
+                    for msg in history:
+                        timestamp_str = msg.get("timestamp", "")
+                        try:
+                            timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                            if timestamp >= cutoff_date:
+                                filtered_history.append(msg)
+                        except (ValueError, TypeError):
+                            # Include messages with invalid timestamps
+                            filtered_history.append(msg)
+                    
+                    history = filtered_history
+                
+                # Apply limit
+                if limit:
+                    history = history[-limit:]
+                elif self._max_history:
+                    history = history[-self._max_history:]
+                
+                logger.debug(f"Retrieved {len(history)} messages for session {session_id}")
+                return history
             
-            if limit:
-                history = history[:limit]
-            elif self._max_history:
-                history = history[:self._max_history]
-            
-            logger.debug(f"Retrieved {len(history)} messages for session {session_id}")
-            return history
+            return []
             
         except Exception as e:
             logger.error(f"Failed to get conversation history: {e}")
@@ -575,21 +379,20 @@ class ProductionLangGraphMemory(BaseMemory):
         """
         await self._ensure_initialized()
         
-        if not self._memory_enabled or not self._store:
-            logger.debug("Memory disabled or store not available")
+        if not self._enabled or not self._store:
             return []
         
         try:
             namespace = self._get_user_namespace(soeid)
-            cutoff_date = datetime.utcnow() - timedelta(days=days)
+            cutoff_date = datetime.now() - timedelta(days=days)
             
-            # Search user memories
+            # Search user memories in the store
             memories = await self._store.asearch(
                 namespace=namespace,
                 limit=limit or self._max_history
             )
             
-            # Filter by date and extract conversations
+            # Extract and filter conversations by date
             history = []
             for memory in memories:
                 memory_data = memory.value
@@ -600,6 +403,7 @@ class ProductionLangGraphMemory(BaseMemory):
                     try:
                         timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
                         if timestamp >= cutoff_date:
+                            # Add both user and assistant messages
                             history.append({
                                 "role": "user",
                                 "content": snippet["query"],
@@ -614,12 +418,15 @@ class ProductionLangGraphMemory(BaseMemory):
                                 "session_id": snippet["session_id"],
                                 "soeid": soeid
                             })
-                    except (ValueError, TypeError) as e:
-                        logger.warning(f"Failed to parse timestamp {timestamp_str}: {e}")
+                    except (ValueError, TypeError):
+                        logger.warning(f"Failed to parse timestamp {timestamp_str}")
                         continue
             
-            # Sort by timestamp
+            # Sort by timestamp (newest first)
             history.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+            
+            if limit:
+                history = history[:limit]
             
             logger.debug(f"Retrieved {len(history)} cross-session messages for SOEID {soeid}")
             return history
@@ -628,51 +435,55 @@ class ProductionLangGraphMemory(BaseMemory):
             logger.error(f"Failed to get chat history by SOEID: {e}")
             return []
     
-    async def clear_session(self, session_id: str):
+    async def clear_session(self, session_id: str) -> bool:
         """
         Clear conversation history for a specific session.
         
         Args:
-            session_id: Session identifier to clear
+            session_id: Session identifier
+            
+        Returns:
+            True if successful, False otherwise
         """
         await self._ensure_initialized()
         
-        if not self._memory_enabled or not self._checkpointer:
-            logger.debug("Memory disabled or checkpointer not available")
-            return
+        if not self._enabled or not self._checkpointer:
+            return True
         
         try:
-            # Get thread configuration
             config = self._get_thread_config(session_id)
             
-            # Delete thread
+            # Delete the thread using LangGraph's method
             await self._checkpointer.adelete_thread(config["configurable"]["thread_id"])
             
             logger.info(f"Cleared session {session_id}")
+            return True
             
         except Exception as e:
             logger.error(f"Failed to clear session {session_id}: {e}")
-            raise
+            return False
     
-    async def clear_user_history(self, soeid: str):
+    async def clear_user_history(self, soeid: str) -> bool:
         """
         Clear all history for a user across all sessions.
         
         Args:
             soeid: User SOEID
+            
+        Returns:
+            True if successful, False otherwise
         """
         await self._ensure_initialized()
         
-        if not self._memory_enabled:
-            logger.debug("Memory disabled")
-            return
+        if not self._enabled:
+            return True
         
         try:
-            # Clear cross-thread memories
+            # Clear cross-thread memories from store
             if self._store:
                 namespace = self._get_user_namespace(soeid)
                 
-                # Get all memories for user
+                # Get all memories for the user
                 memories = await self._store.asearch(namespace=namespace)
                 
                 # Delete each memory
@@ -682,58 +493,59 @@ class ProductionLangGraphMemory(BaseMemory):
                 logger.info(f"Cleared cross-thread memories for SOEID {soeid}")
             
             # Note: Clearing thread-scoped memories would require knowing all session IDs
-            # This could be implemented by maintaining a user->sessions mapping
+            # This could be implemented by maintaining a user->sessions mapping in the store
+            
+            return True
             
         except Exception as e:
             logger.error(f"Failed to clear user history for SOEID {soeid}: {e}")
-            raise
+            return False
+    
+    def is_enabled(self) -> bool:
+        """Check if memory is enabled."""
+        return self._enabled
+    
+    def is_chat_history_enabled(self) -> bool:
+        """Check if chat history is enabled."""
+        return self._chat_history_enabled
+    
+    def set_enabled(self, enabled: bool):
+        """Enable or disable memory."""
+        self._enabled = enabled
+        logger.info(f"Memory enabled set to: {enabled}")
+    
+    def set_chat_history_enabled(self, enabled: bool):
+        """Enable or disable chat history."""
+        self._chat_history_enabled = enabled
+        logger.info(f"Chat history enabled set to: {enabled}")
     
     async def get_memory_stats(self) -> Dict[str, Any]:
-        """
-        Get memory system statistics.
-        
-        Returns:
-            Dictionary with memory statistics
-        """
+        """Get memory system statistics."""
         await self._ensure_initialized()
         
         stats = {
-            "memory_enabled": self._memory_enabled,
+            "enabled": self._enabled,
+            "chat_history_enabled": self._chat_history_enabled,
             "store_type": self._store_type,
+            "schema_name": self._schema_name,
+            "max_history": self._max_history,
+            "max_history_days": self._max_history_days,
             "checkpointer_available": self._checkpointer is not None,
-            "store_available": self._store is not None,
-            "max_history": self._max_history
+            "store_available": self._store is not None
         }
-        
-        try:
-            if self._checkpointer:
-                # Count total checkpoints (approximate)
-                checkpoint_count = 0
-                async for _ in self._checkpointer.alist({"configurable": {"thread_id": "*"}}):
-                    checkpoint_count += 1
-                stats["total_checkpoints"] = checkpoint_count
-            
-            if self._store:
-                # Count total memories (approximate)
-                memory_count = 0
-                memories = await self._store.asearch(namespace=("*",))
-                stats["total_memories"] = len(memories)
-            
-        except Exception as e:
-            logger.error(f"Failed to get memory stats: {e}")
-            stats["error"] = str(e)
         
         return stats
     
     async def cleanup(self):
         """Clean up resources."""
         try:
+            # LangGraph components handle their own connection cleanup
             if self._checkpointer:
-                # AsyncPostgresSaver handles its own connection cleanup
+                # AsyncPostgresSaver handles cleanup automatically
                 pass
             
             if self._store:
-                # AsyncPostgresStore handles its own connection cleanup
+                # AsyncPostgresStore handles cleanup automatically
                 pass
             
             self._initialized = False
@@ -741,12 +553,6 @@ class ProductionLangGraphMemory(BaseMemory):
             
         except Exception as e:
             logger.error(f"Error during cleanup: {e}")
-    
-    def __del__(self):
-        """Destructor to ensure cleanup."""
-        if hasattr(self, '_connection_pool') and self._connection_pool:
-            # Note: We can't call async cleanup in __del__, so just log
-            logger.warning("Memory object deleted with active connection pool - call cleanup() explicitly")
 
-# Alias for backward compatibility
-LangGraphCheckpointMemory = ProductionLangGraphMemory
+
+# Remove the alias - LangGraphCheckpointMemory is the main class
