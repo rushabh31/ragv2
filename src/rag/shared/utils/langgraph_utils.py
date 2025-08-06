@@ -244,7 +244,7 @@ async def generate_node(state: RAGWorkflowState) -> RAGWorkflowState:
         session_id = state.get("session_id", "default")
         query = state.get("query", "")
         soeid = state.get("soeid")  # Get SOEID from state if available
-        use_chat_history = state.get("use_chat_history", False)
+        use_chat_history = state.get("use_chat_history", True)  # Default to True
         chat_history_days = state.get("chat_history_days", 7)
         
         try:
@@ -257,8 +257,8 @@ async def generate_node(state: RAGWorkflowState) -> RAGWorkflowState:
             
             conversation_history = []
             
-            # If chat history is enabled and we have a SOEID, get date-filtered history
-            if use_chat_history and soeid:
+            # If chat history is enabled and we have a SOEID, get cross-session history
+            if use_chat_history and soeid and hasattr(memory, 'get_chat_history_by_soeid_and_date'):
                 logger.info(f"Getting chat history for SOEID {soeid} within {chat_history_days} days")
                 chat_history = await memory.get_chat_history_by_soeid_and_date(
                     soeid=soeid,
@@ -275,29 +275,22 @@ async def generate_node(state: RAGWorkflowState) -> RAGWorkflowState:
                         "timestamp": msg.get("timestamp", "")
                     })
                 
-                logger.info(f"Retrieved {len(conversation_history)} messages from chat history")
+                logger.info(f"Retrieved {len(conversation_history)} messages from cross-session chat history")
             
-            # If no chat history or SOEID, fall back to session-based history
+            # If no cross-session history found, fall back to session-based history
             if not conversation_history:
-                if soeid:
-                    session_history = await memory.get_user_relevant_history_by_soeid(
-                        soeid=soeid,
-                        query=query,
-                        limit=10  # Limit to last 10 interactions
-                    )
-                else:
-                    session_history = await memory.get_relevant_history(
-                        session_id=session_id,
-                        query=query,
-                        limit=10  # Limit to last 10 interactions
-                    )
+                logger.info(f"Getting session-based history for session {session_id}")
+                session_history = await memory.get_history(session_id, limit=10)
                 
                 # Convert to the format expected by the generator
                 for msg in session_history:
                     conversation_history.append({
                         "role": msg.get("role", "user"),
-                        "content": msg.get("content", "")
+                        "content": msg.get("content", ""),
+                        "timestamp": msg.get("timestamp", "")
                     })
+                
+                logger.info(f"Retrieved {len(conversation_history)} messages from session history")
             
         except Exception as e:
             logger.warning(f"Failed to get conversation history from memory: {str(e)}")
