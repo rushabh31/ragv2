@@ -105,6 +105,36 @@ class PgVectorStore(BaseVectorStore):
             else:
                 sqlalchemy_url = f"postgresql+asyncpg://{connection_string}"
             
+            # Remove SSL mode from URL and handle it separately
+            import urllib.parse as urlparse
+            parsed = urlparse.urlparse(sqlalchemy_url)
+            ssl_mode_param = None
+            
+            if parsed.query:
+                query_params = dict(urlparse.parse_qsl(parsed.query))
+                ssl_mode_param = query_params.pop('sslmode', None)
+                
+                # Rebuild URL without sslmode
+                if query_params:
+                    new_query = urlparse.urlencode(query_params)
+                    sqlalchemy_url = urlparse.urlunparse(
+                        (parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_query, parsed.fragment)
+                    )
+                else:
+                    sqlalchemy_url = urlparse.urlunparse(
+                        (parsed.scheme, parsed.netloc, parsed.path, parsed.params, '', parsed.fragment)
+                    )
+            
+            # Configure SSL mode for asyncpg
+            connect_args = {"server_settings": {"application_name": "pgvector_indexer"}}
+            if ssl_mode_param:
+                if ssl_mode_param == 'require':
+                    connect_args['ssl'] = 'require'
+                elif ssl_mode_param == 'prefer':
+                    connect_args['ssl'] = 'prefer'
+                elif ssl_mode_param == 'disable':
+                    connect_args['ssl'] = 'disable'
+            
             # Create async engine with connection pooling
             self.engine = create_async_engine(
                 sqlalchemy_url,
@@ -113,7 +143,7 @@ class PgVectorStore(BaseVectorStore):
                 pool_pre_ping=True,
                 echo=self.config.get("echo_sql", False),  # Set to True for SQL debugging
                 pool_recycle=3600,  # Recycle connections after 1 hour
-                connect_args={"server_settings": {"application_name": "pgvector_indexer"}}
+                connect_args=connect_args
             )
             
             # Create async session factory
