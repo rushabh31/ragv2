@@ -79,6 +79,9 @@ class EnvironmentManager:
         # Load PostgreSQL configuration from YAML secrets file
         self._load_postgresql_config()
         
+        # Load COIN consumer credentials from YAML secrets file
+        self._load_coin_consumer_config()
+        
         # Register common environment variables
         self._register_common_vars()
     
@@ -195,6 +198,79 @@ class EnvironmentManager:
         except Exception as e:
             logger.error(f"Error loading PostgreSQL configuration from YAML: {e}")
     
+    def _load_coin_consumer_config(self) -> None:
+        """Load COIN consumer credentials from YAML secrets file."""
+        try:
+            # Get the path to the COIN consumer credentials file from environment
+            coin_credentials_path = os.environ.get("COIN_CONSUMER_CREDENTIALS_PATH")
+            
+            if not coin_credentials_path:
+                logger.debug("COIN_CONSUMER_CREDENTIALS_PATH not set, skipping COIN YAML config loading")
+                return
+            
+            config_path = Path(coin_credentials_path)
+            if not config_path.exists():
+                logger.warning(f"COIN consumer credentials file not found: {config_path}")
+                return
+            
+            # Load YAML configuration
+            with open(config_path, 'r') as f:
+                config = yaml.safe_load(f)
+            
+            # Extract COIN consumer credentials
+            if isinstance(config, dict):
+                # Look for COIN configuration in various possible structures
+                coin_config = None
+                
+                # Try different possible keys for COIN consumer
+                for key in ['coin', 'consumer', 'coin_consumer', 'client', 'oauth']:
+                    if key in config:
+                        coin_config = config[key]
+                        break
+                
+                # If not found at root level, try nested structures
+                if not coin_config:
+                    for section in ['credentials', 'auth', 'authentication', 'oauth']:
+                        if section in config:
+                            section_config = config[section]
+                            for key in ['coin', 'consumer', 'coin_consumer', 'client']:
+                                if key in section_config:
+                                    coin_config = section_config[key]
+                                    break
+                            if coin_config:
+                                break
+                
+                # If still not found, try direct keys at root level
+                if not coin_config:
+                    client_id = config.get('client_id')
+                    client_secret = config.get('client_secret')
+                    if client_id and client_secret:
+                        coin_config = {'client_id': client_id, 'client_secret': client_secret}
+                
+                if coin_config and isinstance(coin_config, dict):
+                    # Extract client_id and client_secret
+                    client_id = coin_config.get('client_id')
+                    client_secret = coin_config.get('client_secret')
+                    
+                    # Set environment variables if credentials are found
+                    if client_id:
+                        os.environ['COIN_CONSUMER_CLIENT_ID'] = client_id
+                        logger.info("Set COIN_CONSUMER_CLIENT_ID from YAML configuration")
+                    
+                    if client_secret:
+                        os.environ['COIN_CONSUMER_CLIENT_SECRET'] = client_secret
+                        logger.info("Set COIN_CONSUMER_CLIENT_SECRET from YAML configuration")
+                        
+                else:
+                    logger.warning("COIN consumer configuration not found in expected format in YAML file")
+            else:
+                logger.warning("Invalid COIN consumer YAML configuration format")
+                
+        except yaml.YAMLError as e:
+            logger.error(f"Error parsing COIN consumer YAML configuration: {e}")
+        except Exception as e:
+            logger.error(f"Error loading COIN consumer configuration from YAML: {e}")
+    
     def _register_common_vars(self) -> None:
         """Register commonly used environment variables."""
         
@@ -208,13 +284,19 @@ class EnvironmentManager:
         self.register_var(EnvVarConfig(
             name="COIN_CONSUMER_CLIENT_ID",
             var_type=EnvVarType.STRING,
-            description="OAuth2 client ID for authentication"
+            description="OAuth2 client ID for authentication (loaded from YAML secrets)"
         ))
         
         self.register_var(EnvVarConfig(
             name="COIN_CONSUMER_CLIENT_SECRET",
             var_type=EnvVarType.STRING,
-            description="OAuth2 client secret for authentication"
+            description="OAuth2 client secret for authentication (loaded from YAML secrets)"
+        ))
+        
+        self.register_var(EnvVarConfig(
+            name="COIN_CONSUMER_CREDENTIALS_PATH",
+            var_type=EnvVarType.PATH,
+            description="Path to YAML file containing COIN consumer credentials"
         ))
         
         self.register_var(EnvVarConfig(
@@ -328,6 +410,12 @@ class EnvironmentManager:
             name="PGVECTOR_CONFIGURATION_PATH",
             var_type=EnvVarType.PATH,
             description="Path to YAML file containing PostgreSQL credentials"
+        ))
+        
+        self.register_var(EnvVarConfig(
+            name="PGVECTOR_URL",
+            var_type=EnvVarType.STRING,
+            description="Full PostgreSQL URL including host, port, and database (credentials injected from YAML secrets)"
         ))
         
         # Application Configuration
@@ -599,8 +687,11 @@ class EnvironmentManager:
         """
         Build a PostgreSQL connection string using environment variables.
         
+        This method prioritizes PGVECTOR_URL if available, otherwise builds from individual components.
+        Credentials are always taken from YAML secrets files when available.
+        
         Args:
-            database: Database name (if not provided, uses env variable)
+            database: Database name (if not provided, uses env variable or extracts from URL)
             schema: Schema name to include in connection string
             ssl_mode: SSL mode for connection
             
@@ -610,34 +701,87 @@ class EnvironmentManager:
         Raises:
             EnvVarError: If required credentials are missing
         """
-        # Get credentials from environment variables (prioritize PGVECTOR_* variables)
+        # Check if we have PGVECTOR_URL (includes host, port, and database)
+        pgvector_url = self.get_string("PGVECTOR_URL")
+        
+        # Get credentials from environment variables (loaded from YAML secrets)
         username = self.get_string("PGVECTOR_USERNAME") or self.get_string("POSTGRES_USER")
         password = self.get_string("PGVECTOR_PASSWORD") or self.get_string("POSTGRES_PASSWORD")
-        host = self.get_string("POSTGRES_HOST", "localhost")
-        port = self.get_int("POSTGRES_PORT", 5432)
-        db_name = database or self.get_string("POSTGRES_DB")
         
         if not username:
-            raise EnvVarError("PostgreSQL username not found in environment variables (PGVECTOR_USERNAME or POSTGRES_USER)")
+            raise EnvVarError("PostgreSQL username not found in environment variables (PGVECTOR_USERNAME or POSTGRES_USER). Ensure secrets are loaded from YAML files.")
         
-        if not db_name:
-            raise EnvVarError("PostgreSQL database name not found in environment variables (POSTGRES_DB)")
-        
-        # Build connection string
-        if password:
-            base_url = f"postgresql://{username}:{password}@{host}:{port}/{db_name}"
+        if pgvector_url:
+            # Parse PGVECTOR_URL and inject credentials
+            logger.info("Using PGVECTOR_URL as base connection string")
+            
+            # Parse the URL to extract components
+            import urllib.parse as urlparse
+            parsed = urlparse.urlparse(pgvector_url)
+            
+            # Extract database name from URL or use provided database parameter
+            url_database = parsed.path.lstrip('/') if parsed.path else None
+            final_database = database or url_database
+            
+            if not final_database:
+                raise EnvVarError("Database name not found in PGVECTOR_URL and not provided as parameter")
+            
+            # Build new URL with credentials
+            if password:
+                base_url = f"postgresql://{username}:{password}@{parsed.hostname}:{parsed.port}/{final_database}"
+            else:
+                base_url = f"postgresql://{username}@{parsed.hostname}:{parsed.port}/{final_database}"
+            
+            # Preserve any existing query parameters from PGVECTOR_URL
+            existing_params = []
+            if parsed.query:
+                existing_params.extend(parsed.query.split('&'))
+            
+            # Add or update SSL mode
+            ssl_param = f"sslmode={ssl_mode}"
+            if not any(param.startswith('sslmode=') for param in existing_params):
+                existing_params.append(ssl_param)
+            else:
+                existing_params = [ssl_param if param.startswith('sslmode=') else param for param in existing_params]
+            
+            # Add schema to search_path if specified
+            if schema:
+                schema_param = f"options=-c%20search_path%3D{schema}%2Cpublic"
+                # Remove existing schema options to avoid conflicts
+                existing_params = [param for param in existing_params if not param.startswith('options=')]
+                existing_params.append(schema_param)
+            
+            if existing_params:
+                base_url += "?" + "&".join(existing_params)
+            
+            logger.debug(f"Built connection string from PGVECTOR_URL with injected credentials")
+            
         else:
-            base_url = f"postgresql://{username}@{host}:{port}/{db_name}"
-        
-        # Add SSL mode
-        params = [f"sslmode={ssl_mode}"]
-        
-        # Add schema to search_path if specified
-        if schema:
-            params.append(f"options=-c%20search_path%3D{schema}%2Cpublic")
-        
-        if params:
-            base_url += "?" + "&".join(params)
+            # Fallback to building from individual environment variables
+            logger.info("Building PostgreSQL connection string from individual environment variables")
+            
+            host = self.get_string("POSTGRES_HOST", "localhost")
+            port = self.get_int("POSTGRES_PORT", 5432)
+            db_name = database or self.get_string("POSTGRES_DB")
+            
+            if not db_name:
+                raise EnvVarError("PostgreSQL database name not found in environment variables (POSTGRES_DB)")
+            
+            # Build connection string
+            if password:
+                base_url = f"postgresql://{username}:{password}@{host}:{port}/{db_name}"
+            else:
+                base_url = f"postgresql://{username}@{host}:{port}/{db_name}"
+            
+            # Add SSL mode
+            params = [f"sslmode={ssl_mode}"]
+            
+            # Add schema to search_path if specified
+            if schema:
+                params.append(f"options=-c%20search_path%3D{schema}%2Cpublic")
+            
+            if params:
+                base_url += "?" + "&".join(params)
         
         return base_url
 

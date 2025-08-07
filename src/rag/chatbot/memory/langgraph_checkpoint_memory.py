@@ -76,29 +76,29 @@ class LangGraphCheckpointMemory(BaseMemory):
         self._pool_min_size = self._postgres_config.get("pool_min_size", 1)
         self._pool_max_size = self._postgres_config.get("pool_max_size", 10)
         
-        # Build connection string using environment variables
+        # Build connection string using environment variables (production-grade)
         try:
             from src.utils.env_manager import env
             
-            # Get database name from config or environment
-            database = self._postgres_config.get("database") or env.get_string("POSTGRES_DB")
+            # Get database name from config or environment (prefer environment)
+            database = self._postgres_config.get("database")  # Config can override if needed
             
-            # Build connection string using env manager
+            # Build connection string using env manager with PGVECTOR_URL and secrets
             self._connection_string = env.build_postgresql_connection_string(
                 database=database,
                 schema=self._schema_name if self._schema_name != "public" else None,
-                ssl_mode=self._postgres_config.get("ssl_mode", "prefer")
+                ssl_mode=self._postgres_config.get("ssl_mode", "require")  # Production default: require SSL
             )
             
-            logger.info(f"Built PostgreSQL connection string using environment variables")
+            logger.info("Successfully built PostgreSQL connection string from environment variables and YAML secrets")
             
         except Exception as e:
-            # Fallback to explicit connection string if env variables not available
-            self._connection_string = self._postgres_config.get("connection_string")
-            if not self._connection_string:
-                raise MemoryError(f"Failed to build PostgreSQL connection string from environment variables: {e}")
-            
-            logger.warning("Using explicit connection string from config (env variables not available)")
+            # In production, we should not have hardcoded connection strings
+            logger.error(f"Failed to build PostgreSQL connection string from environment: {e}")
+            raise MemoryError(
+                f"Failed to build PostgreSQL connection string from environment variables: {e}. "
+                "Ensure PGVECTOR_URL is set and PostgreSQL credentials are available in YAML secrets file."
+            )
         
         # Database components
         self._pool: Optional[Any] = None  # asyncpg.Pool type hint causes issues
