@@ -25,20 +25,28 @@ class PgVectorStore(BaseVectorStore):
         
         Args:
             config: Configuration dictionary with keys:
-                - dimension: Dimension of the embedding vectors
-                - connection_string: PostgreSQL connection string
+                - dimension: Dimension of the embedding vectors  
                 - table_name: Name of the table to store vectors
                 - schema_name: PostgreSQL schema name (default: 'public')
                 - metadata_path: Optional path to save metadata backup
                 - index_method: Vector index method ('ivfflat' or 'hnsw')
+                - database: Optional database name override
+                - ssl_mode: SSL mode for connection (default: 'require' for production)
+                
+        Note: Connection details and credentials are loaded from environment variables:
+              - PGVECTOR_URL: Base connection URL with host, port, database
+              - PostgreSQL credentials from YAML secrets file
         """
         super().__init__(config)
         self.dimension = self.config.get("dimension", 768)
-        self.connection_string = self.config.get("connection_string")
         self.table_name = self.config.get("table_name", "document_embeddings")
         self.schema_name = self.config.get("schema_name", "public")
         self.metadata_path = self.config.get("metadata_path")
         self.index_method = self.config.get("index_method", "ivfflat")  # ivfflat, hnsw
+        
+        # Connection configuration (loaded from environment)
+        self.database_override = self.config.get("database")  # Optional database name override
+        self.ssl_mode = self.config.get("ssl_mode", "require")  # Production-grade SSL by default
         
         # Create fully qualified table name with schema
         self.qualified_table_name = f"{self.schema_name}.{self.table_name}"
@@ -49,6 +57,36 @@ class PgVectorStore(BaseVectorStore):
         self.chunks = []  # Store chunk objects for retrieval
         self._initialized = False
     
+    def _build_connection_string(self) -> str:
+        """Build PostgreSQL connection string using environment variables and YAML secrets.
+        
+        Returns:
+            PostgreSQL connection string for asyncpg
+            
+        Raises:
+            VectorStoreError: If connection string cannot be built
+        """
+        try:
+            from src.utils.env_manager import env
+            
+            # Build connection string using env manager with PGVECTOR_URL and secrets
+            connection_string = env.build_postgresql_connection_string(
+                database=self.database_override,
+                schema=self.schema_name if self.schema_name != "public" else None,
+                ssl_mode=self.ssl_mode
+            )
+            
+            logger.info("Successfully built PostgreSQL connection string from environment variables and YAML secrets")
+            return connection_string
+            
+        except Exception as e:
+            error_msg = (
+                f"Failed to build PostgreSQL connection string from environment: {e}. "
+                "Ensure PGVECTOR_URL is set and PostgreSQL credentials are available in YAML secrets file."
+            )
+            logger.error(error_msg)
+            raise VectorStoreError(error_msg) from e
+    
     async def initialize(self) -> None:
         """Initialize the pgvector store.
         
@@ -58,20 +96,24 @@ class PgVectorStore(BaseVectorStore):
             return
             
         try:
-            # Convert asyncpg connection string to SQLAlchemy async format
-            if self.connection_string.startswith('postgresql://'):
-                # Convert to asyncpg format for SQLAlchemy
-                sqlalchemy_url = self.connection_string.replace('postgresql://', 'postgresql+asyncpg://')
+            # Build connection string from environment variables and secrets
+            connection_string = self._build_connection_string()
+            
+            # Convert to SQLAlchemy async format
+            if connection_string.startswith('postgresql://'):
+                sqlalchemy_url = connection_string.replace('postgresql://', 'postgresql+asyncpg://')
             else:
-                sqlalchemy_url = f"postgresql+asyncpg://{self.connection_string}"
+                sqlalchemy_url = f"postgresql+asyncpg://{connection_string}"
             
             # Create async engine with connection pooling
             self.engine = create_async_engine(
                 sqlalchemy_url,
-                pool_size=10,
-                max_overflow=20,
+                pool_size=self.config.get("pool_size", 10),
+                max_overflow=self.config.get("max_overflow", 20),
                 pool_pre_ping=True,
-                echo=False  # Set to True for SQL debugging
+                echo=self.config.get("echo_sql", False),  # Set to True for SQL debugging
+                pool_recycle=3600,  # Recycle connections after 1 hour
+                connect_args={"server_settings": {"application_name": "pgvector_indexer"}}
             )
             
             # Create async session factory
@@ -487,6 +529,8 @@ class PgVectorStore(BaseVectorStore):
             
     async def close(self) -> None:
         """Close the pgvector store connections."""
-        if self.conn_pool:
-            await self.conn_pool.close()
+        if self.engine:
+            await self.engine.dispose()
+            self.engine = None
+            self.async_session_factory = None
             logger.info("Closed pgvector database connections")
