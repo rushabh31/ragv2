@@ -105,16 +105,26 @@ class PgVectorStore(BaseVectorStore):
             else:
                 sqlalchemy_url = f"postgresql+asyncpg://{connection_string}"
             
-            # Remove SSL mode from URL and handle it separately
+            # Remove SSL mode and schema options from URL and handle them separately
             import urllib.parse as urlparse
             parsed = urlparse.urlparse(sqlalchemy_url)
             ssl_mode_param = None
+            schema_option = None
             
             if parsed.query:
                 query_params = dict(urlparse.parse_qsl(parsed.query))
                 ssl_mode_param = query_params.pop('sslmode', None)
                 
-                # Rebuild URL without sslmode
+                # Remove schema options (these cause issues with asyncpg)
+                options_param = query_params.pop('options', None)
+                if options_param:
+                    # Extract schema from options parameter
+                    import re
+                    schema_match = re.search(r'search_path[%=]([^%&,]+)', options_param)
+                    if schema_match:
+                        schema_option = schema_match.group(1)
+                
+                # Rebuild URL without problematic parameters
                 if query_params:
                     new_query = urlparse.urlencode(query_params)
                     sqlalchemy_url = urlparse.urlunparse(
@@ -134,6 +144,11 @@ class PgVectorStore(BaseVectorStore):
                     connect_args['ssl'] = 'prefer'
                 elif ssl_mode_param == 'disable':
                     connect_args['ssl'] = 'disable'
+            
+            # Set schema in server settings if specified
+            if schema_option or self.schema_name != "public":
+                schema_to_use = schema_option or self.schema_name
+                connect_args["server_settings"]["search_path"] = f"{schema_to_use},public"
             
             # Create async engine with connection pooling
             self.engine = create_async_engine(
